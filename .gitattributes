@@ -1,0 +1,17 @@
+# Normalize line endings across the repo (Windows + cross-platform)
+* text=auto
+
+# Explicit LF for shell/python/json/yaml
+*.sh     text eol=lf
+*.py     text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+
+# Markdown/docs keep native
+*.md     text
+*.txt    text
+
+# Binary
+*.png    binary
+*.jpg    binary
+*.zip    binary
