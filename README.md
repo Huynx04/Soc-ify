@@ -153,17 +153,6 @@ auto-refresh for a live SOC feel.
 
 ---
 
-## 📸 Screenshots
-
-> Add your dashboard captions here (Kibana → SOC SIEM DASHBOARD):
-```
-| Metric cards   | Attack timeline | Top attacker IPs |
-|----------------|-----------------|------------------|
-| ![cards](url)  | ![timeline](url)| ![topips](url)   |
-```
-
----
-
 ## ✅ Verification checklist
 
 - [ ] `curl -s …/_ingest/pipeline/nginx-soc-enrich` → 200
