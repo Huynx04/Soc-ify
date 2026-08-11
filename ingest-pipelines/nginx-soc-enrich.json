@@ -1,0 +1,131 @@
+{
+  "description": "SOC-ify Enrichment Pipeline for nginx access logs.",
+  "processors": [
+    {
+      "set": {
+        "field": "event.category",
+        "value": [
+          "web",
+          "network"
+        ]
+      }
+    },
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "event"
+      }
+    },
+    {
+      "set": {
+        "field": "event.dataset",
+        "value": "nginx.access"
+      }
+    },
+    {
+      "set": {
+        "field": "event.module",
+        "value": "nginx"
+      }
+    },
+    {
+      "set": {
+        "field": "http.version",
+        "value": "{{http_version}}",
+        "if": "ctx.containsKey('http_version') && ctx.http_version != null && ctx.http_version != ''"
+      }
+    },
+    {
+      "set": {
+        "field": "http.request.method",
+        "value": "{{request_method}}",
+        "if": "ctx.containsKey('request_method') && ctx.request_method != null && ctx.request_method.toString() != '-'"
+      }
+    },
+    {
+      "set": {
+        "field": "http.response.status_code",
+        "value": "{{status}}",
+        "if": "ctx.containsKey('status') && ctx.status != null && ctx.status.toString() != '-'"
+      }
+    },
+    {
+      "set": {
+        "field": "url.original",
+        "value": "{{request}}",
+        "if": "ctx.containsKey('request') && ctx.request != null"
+      }
+    },
+    {
+      "set": {
+        "field": "url.path",
+        "value": "{{request_uri}}",
+        "if": "ctx.containsKey('request_uri') && ctx.request_uri != null && ctx.request_uri.toString() != '-'"
+      }
+    },
+    {
+      "set": {
+        "field": "url.query",
+        "value": "{{args}}",
+        "if": "ctx.containsKey('args') && ctx.args != null && ctx.args.toString() != '' && ctx.args.toString() != '-'"
+      }
+    },
+    {
+      "set": {
+        "field": "http.request.referrer",
+        "value": "{{http_referer}}",
+        "if": "ctx.containsKey('http_referer') && ctx.http_referer != null && ctx.http_referer.toString() != '-'"
+      }
+    },
+    {
+      "set": {
+        "field": "user_agent.original",
+        "value": "{{http_user_agent}}",
+        "if": "ctx.containsKey('http_user_agent') && ctx.http_user_agent != null && ctx.http_user_agent.toString() != '-'"
+      }
+    },
+    {
+      "geoip": {
+        "field": "client.ip",
+        "target_field": "source.geo",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+    {
+      "script": {
+        "description": "Classify attack type+severity+confidence",
+        "lang": "painless",
+        "source": "def path = ctx.containsKey('request_uri') && ctx.request_uri != null ? ctx.request_uri.toString() : '';\ndef args = ctx.containsKey('args') && ctx.args != null ? ctx.args.toString() : '';\ndef ua   = ctx.containsKey('http_user_agent') && ctx.http_user_agent != null ? ctx.http_user_agent.toString() : '';\ndef full = path + ' ' + args;\ndef statusStr = ctx.containsKey('status') && ctx.status != null ? ctx.status.toString() : '0';\ndef code = 0;\ntry { code = Integer.parseInt(statusStr); } catch (Exception e) {}\n\nctx.soc = [:];\nctx.soc.severity = 'low';\nctx.soc.attack_class = 'none';\nctx.soc.confidence = 0.0;\n\nif (full.matches(\"(?i).*(\\\\bselect\\\\s+.+from\\\\s+|union\\\\s+select|\\\\bselect\\\\s+\\\\*\\\\s+from|sleep\\\\s*\\\\(|0x|information_schema|\\\\bor\\\\s+1=1|benchmark\\\\s*\\\\(|load_file|outfile).*\")) {\n  ctx.soc.attack_class = 'sqli'; ctx.soc.severity = 'high'; ctx.soc.confidence = 0.85;\n}\nelse if (full.matches(\"(?i).*(<script|alert\\\\s*\\\\(|javascript\\\\s*:|onerror\\\\s*=|onload\\\\s*=|prompt\\\\s*\\\\(|confirm\\\\s*\\\\(|document\\\\.cookie|iframe\\\\s*src).*\")) {\n  ctx.soc.attack_class = 'xss'; ctx.soc.severity = 'medium'; ctx.soc.confidence = 0.8;\n}\nelse if (full.matches(\"(?i).*(\\\\.\\\\./\\\\.\\\\./|\\\\.\\\\.%2f|%2e%2e%2f|/etc/passwd|/etc/shadow|windows/system32|\\\\.\\\\.\\\\\\\\)\\\\.\\\\.).*\")) {\n  ctx.soc.attack_class = 'path_traversal'; ctx.soc.severity = 'high'; ctx.soc.confidence = 0.9;\n}\nelse if (full.matches(\"(?i).*((\\\\||;|`|\\\\$\\\\()\\\\s*(cat|id|whoami|ls|wget|curl|nc|bash|sh|python|perl|rm|uname)\\\\b|/bin/sh|cmd\\\\.exe|powershell).*\")) {\n  ctx.soc.attack_class = 'command_injection'; ctx.soc.severity = 'critical'; ctx.soc.confidence = 0.85;\n}\nelse if (full.matches(\"(?i).*(/\\\\.env|/\\\\.git|/\\\\.aws|/\\\\.ssh|web\\\\.config|\\\\.bak\\\\b|config\\\\.php\\\\b|phpinfo|/dump\\\\.sql|/backup).*\")) {\n  ctx.soc.attack_class = 'info_disclosure'; ctx.soc.severity = 'critical'; ctx.soc.confidence = 0.9;\n}\nelse if (full.matches(\"(?i).*(url=\\\\s*https?://|proxy=|request=|dest=|target=|uri=\\\\s*\\\\d+\\\\.\\\\d+\\\\.\\\\d+\\\\.\\\\d+|file=\\\\s*https?://|load=\\\\s*https?://).*\")) {\n  ctx.soc.attack_class = 'ssrf'; ctx.soc.severity = 'high'; ctx.soc.confidence = 0.7;\n}\nelse if (full.matches(\"(?i).*(/admin|/manager|/wp-admin|/console|/jenkins|/actuator|/webui/|/geoserver/web|/owa|/exchange|/webmail|/\\\\.ssh|/phpmyadmin).*\")) {\n  ctx.soc.attack_class = 'admin_panel_scan'; ctx.soc.severity = 'medium'; ctx.soc.confidence = 0.6;\n}\nelse if (full.matches(\"(?i).*(login|signin|auth|j_spring_security|logon|authenticate).*\")) {\n  ctx.soc.attack_class = 'auth_scan'; ctx.soc.severity = 'medium'; ctx.soc.confidence = 0.5;\n}\nelse if (full.matches(\"(?i).*(sqlmap|nuclei|nikto|gobuster|dirbuster|acunetix|nessus|wpscan|zap|masscan|fuzz|hydra|libwww-perl|python-requests).*\")) {\n  ctx.soc.attack_class = 'scanner'; ctx.soc.severity = 'low'; ctx.soc.confidence = 0.7;\n}\n\nif (ctx.soc.attack_class != 'none' && code >= 400) {\n  ctx.soc.confidence = Math.min(0.95, ctx.soc.confidence + 0.1);\n}"
+      }
+    },
+    {
+      "set": {
+        "field": "event.severity",
+        "value": 4,
+        "if": "ctx.soc.severity == 'critical'"
+      }
+    },
+    {
+      "set": {
+        "field": "event.severity",
+        "value": 3,
+        "if": "ctx.soc.severity == 'high'"
+      }
+    },
+    {
+      "set": {
+        "field": "event.severity",
+        "value": 2,
+        "if": "ctx.soc.severity == 'medium'"
+      }
+    },
+    {
+      "set": {
+        "field": "event.severity",
+        "value": 1,
+        "if": "ctx.soc.severity == 'low' || ctx.soc.severity == 'none'"
+      }
+    }
+  ]
+}

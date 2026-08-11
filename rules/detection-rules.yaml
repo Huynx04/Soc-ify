@@ -1,0 +1,177 @@
+# SOC-ify Sigma-style Detection Rules
+# Target: nginx access logs (index pattern: nginx-access-*)
+# Each rule describes: detection query, severity, confidence, tags, false-positive guidance.
+# These are EXECUTED via the transform+scheduled script pipeline (basic-license compatible),
+# NOT via Elastic Security detection rules (which require a trial+/paid license).
+#
+# Rule IDs are stable so the alert index can dedupe/reference them.
+
+applies_to: "index: nginx-access-* | field: soc.attack_class (when enrich pipeline applied) OR path/args/user_agent raw fields"
+
+rules:
+  # [1] SQL Injection - classic signatures
+  - id: R-001
+    title: "SQL Injection - Classic Payload"
+    severity: high
+    confidence: 0.85
+    attack_class: sqli
+    detection:
+      lucene: |
+        url.path:* " AND url.query:* AND
+        (url.query:("select\ " AND "*from\ ") OR url.query:"union\ select"
+         OR url.query:"sleep\(" OR url.query:information_schema
+         OR url.query:("or\ " AND "1=1"))
+    false_positive: |
+      Legit apps with search features may pass "select" in query params. Correlate
+      with status (4xx favors attack) and source IP reputation.
+
+  # [2] XSS - reflected
+  - id: R-002
+    title: "Cross-Site Scripting (XSS) Attempt"
+    severity: medium
+    confidence: 0.8
+    attack_class: xss
+    detection:
+      lucene: |
+        url.query:(script OR alert( OR onerror= OR onload= OR prompt( OR document.cookie OR "iframe src")
+    false_positive: |
+      Developer UA / testing tools trigger often. Check user_agent; internal/testing IPs whitelist.
+
+  # [3] Path Traversal / LFI
+  - id: R-003
+    title: "Path Traversal / Local File Inclusion"
+    severity: high
+    confidence: 0.9
+    attack_class: path_traversal
+    detection:
+      lucene: |
+        url.path:("..\\/" OR "..\\\\" OR "/etc/passwd" OR "/etc/shadow" OR "system32" OR "%2e%2e%2f" OR "..%2f")
+    false_positive: |
+      Nearly always malicious. Severity=high unless proven otherwise.
+
+  # [4] Command Injection
+  - id: R-004
+    title: "Command Injection Attempt"
+    severity: critical
+    confidence: 0.85
+    attack_class: command_injection
+    detection:
+      lucene: |
+        url.query:(* "|" *"cat" OR *"|" *"id" OR *"|" *"whoami" OR *";" *"whoami"
+                   OR "/bin/sh" OR "cmd.exe" OR powershell OR *"$(" *")
+    false_positive: |
+      Extremely high confidence when combined with 4xx/5xx response. Escalate to critical.
+
+  # [5] Sensitive File Disclosure
+  - id: R-005
+    title: "Sensitive File / Source Disclosure"
+    severity: critical
+    confidence: 0.9
+    attack_class: info_disclosure
+    detection:
+      lucene: |
+        url.path:("/.env" OR "/.git" OR "/.aws" OR "/.ssh" OR "web.config" OR "*.bak"
+                   OR "config.php" OR "phpinfo" OR "/dump.sql" OR "*.sql" OR "/backup")
+    false_positive: |
+      Real exposure if 200 returned. This is a top attacker target (seen in /, .env, geoserver probes).
+
+  # [6] SSRF
+  - id: R-006
+    title: "Server-Side Request Forgery"
+    severity: high
+    confidence: 0.7
+    attack_class: ssrf
+    detection:
+      lucene: |
+        url.query:("url=http*" OR "proxy=*" OR "request=*" OR "dest=*" OR "target=*"
+                   OR "uri=\d+\.\d+\.\d+\.\d+" OR "file=http*" OR "load=http*")
+    false_positive: |
+      Apps legitimately fetching external URLs. Verify target is internal/cloud metadata
+      (169.254.169.254) for true SSRF.
+
+  # [7] Scanners / Bot UAs
+  - id: R-007
+    title: "Vulnerability Scanner User-Agent"
+    severity: low
+    confidence: 0.7
+    attack_class: scanner
+    detection:
+      lucene: |
+        user_agent.original:(sqlmap OR nuclei OR nikto OR gobuster OR dirbuster
+                  OR acunetix OR nessus OR wpscan OR "OWASP ZAP" OR masscan
+                  OR fuzz OR hydra OR libwww-perl OR python-requests)
+    false_positive: |
+      Recon noise; low severity but watch for sharp frequency increase (escalate via R-011).
+
+  # [8] Admin / Management Panel Probing
+  - id: R-008
+    title: "Admin / Management Panel Probe"
+    severity: medium
+    confidence: 0.6
+    attack_class: admin_panel_scan
+    detection:
+      lucene: |
+        url.path:(/admin* OR /manager* OR /wp-admin* OR /console* OR /jenkins*
+                  OR /actuator* OR /webui/* OR /geoserver/web* OR /owa* OR /exchange*
+                  OR /webmail* OR /.ssh* OR /phpmyadmin*)
+    false_positive: |
+      Some legit admin consoles exist; combine with R-011 thresholding to find real brute-force.
+
+  # [9] Login / Auth Endpoint Scanning
+  - id: R-009
+    title: "Authentication Endpoint Scan"
+    severity: medium
+    confidence: 0.5
+    attack_class: auth_scan
+    detection:
+      lucene: |
+        url.path:(/login* OR /signin* OR /auth* OR j_spring_security* OR /logon* OR /authenticate*)
+    false_positive: |
+      Normal traffic if intermittent. Escalates to brute-force via R-011.
+
+  # [10] GEO ANOMALY - traffic from disallowed/rare geo (geo-block detected hits)
+  - id: R-010
+    title: "Attempted Access from Non-VN Geo (hit geo-block 403)"
+    severity: low
+    confidence: 0.5
+    attack_class: geoblock_bypass
+    detection:
+      lucene: |
+        http.response.status_code:403 AND url.path:/
+    false_positive: |
+      geo-block returns 403 to non-VN IPs by design. Watch for repeated source trying
+      across many paths (fuzzing) -> escalate.
+
+  # [11] FREQUENCY - Single IP high request rate (scan/brute force)
+  - id: R-011
+    title: "High Request Rate - Single Source (Scan / Brute-force)"
+    severity: medium
+    confidence: 0.7
+    attack_class: transverse_freq
+    detection:
+      # Implemented in transform: GROUP BY client.ip, HAVING count > threshold in window
+      logic: |
+        transform aggregating count(url) by client.ip over 10m;
+        alert if count >= 30 OR count(distinct url.path) >= 15
+    false_positive: |
+      Legit crawling/CDN bursts. Raise threshold to taste; correlate with R-001..008.
+
+  # [12] ATTACK CHAIN - source that triggered any critical+ then continued
+  - id: R-012
+    title: "Potential Attack Chain (Persistent Source)"
+    severity: high
+    confidence: 0.75
+    attack_class: attack_chain
+    detection:
+      logic: |
+        Same client.ip appearing in >=2 distinct severity>=high rule hits within 15m
+        or a source seen scanning then hitting an app (recon->exploit).
+    false_positive: |
+      Low; a source hitting multiple critical patterns is almost certainly malicious.
+
+# NOTE ON TRIAL LICENSE:
+# The Elastic trial (your current license, expiry soon->Basic) ENABLES Watcher + Detection Rules + Transforms
+# while active, but these STOP or are restricted when it drops to Basic.
+# To make the SOC durable, R-011/R-012 (aggregation/freq/chain) are implemented with
+# TRANSFORMS (available in Basic for standard usage) + a scheduled tripwire script,
+# so detection keeps working on the free tier.

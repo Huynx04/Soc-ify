@@ -1,0 +1,38 @@
+{
+  "description": "Transform job: High request rate per source IP (R-011). Groups nginx access logs by client.ip over a rolling window and flags sources exceeding thresholds. Output is written to siem-findings as candidate alerts for triage.",
+  "source": {
+    "index": "nginx-access-*",
+    "query": { "range": { "@timestamp": { "gte": "now-30m" } } }
+  },
+  "dest": {
+    "index": "siem-findings",
+    "pipeline": "soc-finding-default"
+  },
+  "pivot": {
+    "group_by": {
+      "client_ip": { "terms": { "field": "client.ip" } },
+      "rule_id": { "terms": { "field": "_index", "script": "emit('R-011')" } },
+      "window": { "date_histogram": { "field": "@timestamp", "calendar_interval": "10m" } }
+    },
+    "aggregations": {
+      "request_count": { "value_count": { "field": "@timestamp" } },
+      "distinct_paths": { "cardinality": { "field": "url.path" } },
+      "max_status": { "max": { "field": "http.response.status_code" } },
+      "latest_ua": { "top_hits": { "size": 1, "sort": [{ "@timestamp": { "order": "desc" } }], "_source": ["user_agent.original"] } }
+    }
+  },
+  "description2": "Threshold logic applied in post-processing scheduler: alert when request_count >= 30 OR distinct_paths >= 15. See scripts/apply_rules.py.",
+  "settings": {
+    "dedup_index": "siem-findings",
+    "max_page_search_size": 500,
+    "docs_per_second": 100,
+    "frequency": true,
+    "group_by": "client_ip"
+  },
+  "retention_policy": {
+    "time": {
+      "field": "@timestamp",
+      "max_age": "30d"
+    }
+  }
+}
