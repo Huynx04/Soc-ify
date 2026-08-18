@@ -101,7 +101,7 @@ def build_md(es, days):
     lines.append(f"- Findings generated: **{findings_n}** | still open: **{open_n}**\n")
 
     lines.append("## Top Attack Classes")
-    for k, v in top_terms(es, NGINX, "soc.attack_class", rng):
+    for k, v in top_terms(es, FINDINGS, "attack_class.keyword", rng):
         lines.append(f"- {k}: {v}")
     lines.append("")
 
@@ -116,7 +116,7 @@ def build_md(es, days):
     lines.append("")
 
     lines.append("## Findings by Rule")
-    for k, v in top_terms(es, FINDINGS, "rule_id", rng):
+    for k, v in top_terms(es, FINDINGS, "rule_id.keyword", rng):
         lines.append(f"- {k}: {v}")
     lines.append("")
 

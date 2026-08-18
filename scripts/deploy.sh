@@ -42,10 +42,9 @@ curl -s $AUTH -XPUT "$ES/_index_template/siem-findings" -H "$CT" -d '{
         "severity":       { "type": "integer" },
         "confidence":     { "type": "float" },
         "attack_class":   { "type": "keyword" },
-        "url.path":       { "type": "text" },
+        "url.path":       { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
         "status":         { "type": "keyword" },
         "false_positive_hint": { "type": "text" },
-        "status":         { "type": "keyword" },
         "@timestamp":     { "type": "date" },
         "first_seen":     { "type": "date" }
       }

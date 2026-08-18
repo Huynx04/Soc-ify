@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Build SOC summary Excel with real ES data (run with Anaconda python: E:\\anaconda\\python.exe)."""
-import json, urllib.request, datetime
+import json, urllib.request, datetime, os
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -164,7 +164,8 @@ for w in wb.worksheets:
             if v is not None and len(str(v)) > m: m = len(str(v))
         w.column_dimensions[get_column_letter(col[0].column)].width = min(m+2, 40)
 
-out = r"C:\Users\ADMIN\soc-ify\reports\SOC_TONG_THUAT_ES_CORRELATION.xlsx"
+out = os.path.join(os.path.dirname(__file__), "..", "reports", "SOC_TONG_THUAT_ES_CORRELATION.xlsx")
+out = os.path.abspath(out)
 wb.save(out)
 print("DA TAO:", out)
 print("Sheets:", wb.sheetnames)
