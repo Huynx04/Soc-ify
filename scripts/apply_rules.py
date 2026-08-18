@@ -66,6 +66,9 @@ RULES = [
     {"id": "R-009", "title": "Auth Endpoint Scan", "sev": 2, "cls": "auth_scan",
      "pat": r"(?i)(/login|/signin|/auth|j_spring_security|/logon|/authenticate)",
      "fp": "intermittent=normal; spam=brute"},
+    {"id": "R-010", "title": "Geo-block bypass probe", "sev": 1, "cls": "geoblock_bypass",
+     "pat": r"(?i)^/$", "status": 403,
+     "fp": "geo-block returns 403 to non-VN IPs by design"},
 ]
 
 FREQ_THRESHOLD = int(os.environ.get("SOC_FREQ_THRESHOLD", 30))   # R-011
@@ -139,6 +142,10 @@ def eval_rules(doc):
     haystack = f"{path} {query} {ua}".lower()
     hits = []
     for rule in RULES:
+        # rules with an explicit "status" constraint only fire when the response
+        # matches (e.g. R-010 geo-block probe: HTTP 403 on /)
+        if rule.get("status") is not None and status != rule["status"]:
+            continue
         if re.search(rule["pat"], haystack):
             hits.append(rule)
     return {
