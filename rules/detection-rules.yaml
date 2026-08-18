@@ -5,6 +5,10 @@
 # NOT via Elastic Security detection rules (which require a trial+/paid license).
 #
 # Rule IDs are stable so the alert index can dedupe/reference them.
+#
+# mitre.* maps each rule to the MITRE ATT&CK framework (attack.mitre.org) — the shared
+# language used across commercial SOC products. Keeping this lets the system "speak the
+# industry standard" and enables ATT&CK-centric triage/dashboarding.
 
 applies_to: "index: nginx-access-* | field: soc.attack_class (when enrich pipeline applied) OR path/args/user_agent raw fields"
 
@@ -15,6 +19,10 @@ rules:
     severity: high
     confidence: 0.85
     attack_class: sqli
+    mitre:
+      id: T1190
+      technique: "Exploit Public-Facing Application"
+      tactic: initial-access
     detection:
       lucene: |
         url.path:* " AND url.query:* AND
@@ -31,6 +39,10 @@ rules:
     severity: medium
     confidence: 0.8
     attack_class: xss
+    mitre:
+      id: T1189
+      technique: "Drive-by Compromise"
+      tactic: initial-access
     detection:
       lucene: |
         url.query:(script OR alert( OR onerror= OR onload= OR prompt( OR document.cookie OR "iframe src")
@@ -43,9 +55,13 @@ rules:
     severity: high
     confidence: 0.9
     attack_class: path_traversal
+    mitre:
+      id: T1083
+      technique: "File and Directory Discovery"
+      tactic: discovery
     detection:
       lucene: |
-        url.path:("..\\/" OR "..\\\\" OR "/etc/passwd" OR "/etc/shadow" OR "system32" OR "%2e%2e%2f" OR "..%2f")
+        url.path:("..\/" OR "..\\" OR "/etc/passwd" OR "/etc/shadow" OR "system32" OR "%2e%2e%2f" OR "..%2f")
     false_positive: |
       Nearly always malicious. Severity=high unless proven otherwise.
 
@@ -55,10 +71,14 @@ rules:
     severity: critical
     confidence: 0.85
     attack_class: command_injection
+    mitre:
+      id: T1059
+      technique: "Command and Scripting Interpreter"
+      tactic: execution
     detection:
       lucene: |
         url.query:(* "|" *"cat" OR *"|" *"id" OR *"|" *"whoami" OR *";" *"whoami"
-                   OR "/bin/sh" OR "cmd.exe" OR powershell OR *"$(" *")
+                   OR "/bin/sh" OR "cmd.exe" OR powershell OR *"$(" *)
     false_positive: |
       Extremely high confidence when combined with 4xx/5xx response. Escalate to critical.
 
@@ -68,6 +88,10 @@ rules:
     severity: critical
     confidence: 0.9
     attack_class: info_disclosure
+    mitre:
+      id: T1005
+      technique: "Data from Local System"
+      tactic: collection
     detection:
       lucene: |
         url.path:("/.env" OR "/.git" OR "/.aws" OR "/.ssh" OR "web.config" OR "*.bak"
@@ -81,6 +105,10 @@ rules:
     severity: high
     confidence: 0.7
     attack_class: ssrf
+    mitre:
+      id: T1190
+      technique: "Exploit Public-Facing Application"
+      tactic: initial-access
     detection:
       lucene: |
         url.query:("url=http*" OR "proxy=*" OR "request=*" OR "dest=*" OR "target=*"
@@ -95,6 +123,10 @@ rules:
     severity: low
     confidence: 0.7
     attack_class: scanner
+    mitre:
+      id: T1595.001
+      technique: "Active Scanning: Scanning IP Blocks"
+      tactic: reconnaissance
     detection:
       lucene: |
         user_agent.original:(sqlmap OR nuclei OR nikto OR gobuster OR dirbuster
@@ -109,6 +141,10 @@ rules:
     severity: medium
     confidence: 0.6
     attack_class: admin_panel_scan
+    mitre:
+      id: T1190
+      technique: "Exploit Public-Facing Application"
+      tactic: initial-access
     detection:
       lucene: |
         url.path:(/admin* OR /manager* OR /wp-admin* OR /console* OR /jenkins*
@@ -123,6 +159,10 @@ rules:
     severity: medium
     confidence: 0.5
     attack_class: auth_scan
+    mitre:
+      id: T1110.001
+      technique: "Brute Force: Password Guessing"
+      tactic: credential-access
     detection:
       lucene: |
         url.path:(/login* OR /signin* OR /auth* OR j_spring_security* OR /logon* OR /authenticate*)
@@ -135,6 +175,10 @@ rules:
     severity: low
     confidence: 0.5
     attack_class: geoblock_bypass
+    mitre:
+      id: T1595
+      technique: "Active Scanning"
+      tactic: reconnaissance
     detection:
       lucene: |
         http.response.status_code:403 AND url.path:/
@@ -148,6 +192,10 @@ rules:
     severity: medium
     confidence: 0.7
     attack_class: transverse_freq
+    mitre:
+      id: T1595
+      technique: "Active Scanning"
+      tactic: reconnaissance
     detection:
       # Implemented in transform: GROUP BY client.ip, HAVING count > threshold in window
       logic: |
@@ -162,12 +210,73 @@ rules:
     severity: high
     confidence: 0.75
     attack_class: attack_chain
+    mitre:
+      id: "T1090"
+      technique: "Multiple Techniques (correlated chain)"
+      tactic: multiple-tactics
     detection:
       logic: |
         Same client.ip appearing in >=2 distinct severity>=high rule hits within 15m
         or a source seen scanning then hitting an app (recon->exploit).
     false_positive: |
       Low; a source hitting multiple critical patterns is almost certainly malicious.
+
+  # [13] CROSS-SOURCE CORRELATION - firewall + web (multi-layer attacker)
+  - id: R-013
+    title: "Firewall+Web Correlation - Multi-Layer Attacker"
+    severity: medium
+    confidence: 0.85
+    attack_class: cross_source_correlation
+    mitre:
+      id: T1595
+      technique: "Active Scanning (multi-layer recon)"
+      tactic: reconnaissance
+    detection:
+      logic: |
+        Same source.ip present in fire-ufw-* (event.action=block) AND in nginx-access-*
+        (client.ip) within the same detection window => attacker probing firewall layer
+        who also reached the web tier. severity scales with web hit count.
+    false_positive: |
+      Low; a source explicitly blocked by UFW that still reached nginx is a deliberate
+      multi-layer attempt (requires passing the allow-list). Severity medium unless
+      web_hits >= 10 (then high).
+
+  # [14] SSH BRUTE-FORCE - repeated failed authentications
+  - id: R-014
+    title: "SSH Brute-Force - Repeated Failed Logins"
+    severity: high
+    confidence: 0.9
+    attack_class: ssh_bruteforce
+    mitre:
+      id: T1110.001
+      technique: "Brute Force: Password Guessing"
+      tactic: credential-access
+    detection:
+      logic: |
+        Aggregate event.outcome=failure by source.ip in auth-* within window;
+        alert if failures >= SOC_SSH_FAIL (default 5).
+    false_positive: |
+      Distributed/TOR scan sources; automated credential-stuffing bots dominate.
+      Verify legit VPN/admin ranges.
+
+  # [15] SSH CROSS-SOURCE CORRELATION - host-layer + network attacker
+  - id: R-015
+    title: "SSH Cross-Source Correlation - Host+Network Attacker"
+    severity: medium
+    confidence: 0.7
+    attack_class: ssh_cross_source
+    mitre:
+      id: T1078
+      technique: "Valid Accounts"
+      tactic: persistence
+    detection:
+      logic: |
+        source.ip active in SSH (successful login OR repeated failures) in auth-* AND
+        also present in nginx-access-* (web) and/or fire-ufw-* (blocked) in the window.
+        Host-layer foothold combined with web/network activity.
+    false_positive: |
+      Admin or VPN source IP may legitimately hit both web and SSH; list trusted IPs in
+      SOC_ALLOWED_IPS to downgrade severity.
 
 # NOTE ON TRIAL LICENSE:
 # The Elastic trial (your current license, expiry soon->Basic) ENABLES Watcher + Detection Rules + Transforms

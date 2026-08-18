@@ -71,6 +71,29 @@ RULES = [
 FREQ_THRESHOLD = int(os.environ.get("SOC_FREQ_THRESHOLD", 30))   # R-011
 PATH_DISTINCT_THRESHOLD = int(os.environ.get("SOC_PATH_DISTINCT", 15))
 CHAIN_WINDOW = int(os.environ.get("SOC_CHAIN_WINDOW", 15))       # R-012 minutes
+FIRE_INDEX = os.environ.get("SOC_FIRE_INDEX", "fire-ufw-*")      # R-013 firewall source
+SSH_INDEX = os.environ.get("SOC_SSH_INDEX", "auth-*")             # R-014 SSH source
+SSH_FAIL_THRESHOLD = int(os.environ.get("SOC_SSH_FAIL", 5))        # R-014 failures per IP
+
+# MITRE ATT&CK mapping (mirrors detection-rules.yaml <mitre> block - keep in sync)
+# rule_id -> (technique_id, technique_name, tactic)
+MITRE = {
+    "R-001": ("T1190", "Exploit Public-Facing Application", "initial-access"),
+    "R-002": ("T1189", "Drive-by Compromise", "initial-access"),
+    "R-003": ("T1083", "File and Directory Discovery", "discovery"),
+    "R-004": ("T1059", "Command and Scripting Interpreter", "execution"),
+    "R-005": ("T1005", "Data from Local System", "collection"),
+    "R-006": ("T1190", "Exploit Public-Facing Application", "initial-access"),
+    "R-007": ("T1595.001", "Active Scanning: Scanning IP Blocks", "reconnaissance"),
+    "R-008": ("T1190", "Exploit Public-Facing Application", "initial-access"),
+    "R-009": ("T1110.001", "Brute Force: Password Guessing", "credential-access"),
+    "R-010": ("T1595", "Active Scanning", "reconnaissance"),
+    "R-011": ("T1595", "Active Scanning", "reconnaissance"),
+    "R-012": ("T1090", "Multiple Techniques (chain)", "multiple-tactics"),
+    "R-013": ("T1595", "Active Scanning (multi-layer recon)", "reconnaissance"),
+    "R-014": ("T1110.001", "Brute Force: Password Guessing", "credential-access"),
+    "R-015": ("T1078", "Valid Accounts", "persistence"),
+}
 
 
 def es_client():
@@ -136,12 +159,14 @@ def write_findings(es, findings):
     now = datetime.datetime.utcnow().isoformat() + "Z"
     for f in findings:
         action = {"index": {"_index": FINDINGS, "_id": f["id"]}}
+        mid, mname, mtac = MITRE.get(f["rule_id"], ("", "", ""))
         src = {
             "rule_id": f["rule_id"], "rule_title": f["title"],
             "client.ip": f["ip"], "severity": f["sev"], "confidence": f["conf"],
             "attack_class": f["cls"], "url.path": f["path"], "url.query": f["query"],
             "user_agent.original": f["ua"], "http.response.status_code": f["status"],
             "false_positive_hint": f["fp"], "status": "open",
+            "mitre.id": mid, "mitre.technique": mname, "mitre.tactic": mtac,
             "@timestamp": now, "first_seen": f["ts"],
         }
         body.extend([action, src])
@@ -191,6 +216,128 @@ def freq_detection(es, rng):
                 "last_ts": b["last_ts"]["value_as_string"] if b["last_ts"].get("value_as_string") else ""
             })
     return out
+
+
+def firewall_web_correlation(es, rng):
+    """R-013: cross-source correlation - source IP blocked by UFW firewall AND
+    also hitting nginx web in the same window => attacker reaching multiple layers."""
+    def _terms(index, ip_field, query=None):
+        q = {"size": 0, "query": {"bool": {"filter": [{"range": {"@timestamp": {"gte": rng}}}]}}}
+        if query:
+            q["query"]["bool"]["filter"].extend(query)
+        q["aggs"] = {
+            ip_field.replace('.', '_'):
+            {"terms": {"field": ip_field, "size": 2000},
+             "aggs": {"count": {"value_count": {"field": "@timestamp"}},
+                      "last": {"max": {"field": "@timestamp"}}}}
+        }
+        try:
+            res = es.search(index=index, body=q)
+            key = ip_field.replace('.', '_')
+            return {b["key"]: (b["count"]["value"], b["last"].get("value_as_string", ""))
+                    for b in res["aggregations"][key]["buckets"]}
+        except Exception as e:
+            print(f"[!] {index} agg failed: {e}", file=sys.stderr)
+            return {}
+
+    # firewall: IPs that got UFW *blocked* events
+    fw = _terms(FIRE_INDEX, "source.ip",
+                [{"term": {"event.action": "block"}}])
+    # web: IPs with any nginx window
+    web = _terms(ES_INDEX, "client.ip")
+
+    out = []
+    for ip, (fw_count, _) in fw.items():
+        n2 = web.get(ip)
+        if n2:
+            web_count, last_ts = n2
+            # severity scales with how many web hits (deeper probing)
+            sev = 3 if web_count >= 10 else 2
+            out.append({
+                "ip": ip, "fw_blocks": fw_count, "web_hits": web_count,
+                "last_ts": last_ts or datetime.datetime.utcnow().isoformat() + "Z",
+                "sev": sev,
+            })
+    return out
+
+
+def ssh_brute_detection(es, rng):
+    """R-014: SSH brute-force - source IP with >= threshold failed auth in window."""
+    body = {
+        "size": 0,
+        "query": {"bool": {"filter": [
+            {"range": {"@timestamp": {"gte": rng}}},
+            {"term": {"event.outcome": "failure"}},
+            {"exists": {"field": "source.ip"}},
+        ]}},
+        "aggs": {
+            "by_ip": {
+                "terms": {"field": "source.ip", "size": 500},
+                "aggs": {
+                    "fails": {"value_count": {"field": "@timestamp"}},
+                    "last": {"max": {"field": "@timestamp"}},
+                    "users": {"terms": {"field": "user.name", "size": 5}},
+                }
+            }
+        }
+    }
+    try:
+        res = es.search(index=SSH_INDEX, body=body)
+    except Exception as e:
+        print(f"[!] ssh brute agg failed: {e}", file=sys.stderr)
+        return []
+    out = []
+    for b in res["aggregations"]["by_ip"]["buckets"]:
+        fails = b["fails"]["value"]
+        if fails >= SSH_FAIL_THRESHOLD:
+            users = ",".join(sorted({u["key"] for u in b["users"]["buckets"]}) or "?")
+            out.append({
+                "ip": b["key"], "fails": fails, "users": users,
+                "last_ts": b["last"].get("value_as_string", "") or datetime.datetime.utcnow().isoformat() + "Z"
+            })
+    return out
+
+
+def _index_ips(es, index, ip_field, extra_filters=None, rng=None):
+    """Helper: dict {ip: doc_count} for active IPs in an index over a range."""
+    q = {"size": 0, "query": {"bool": {"filter": [{"range": {"@timestamp": {"gte": rng}}}]}}}
+    if extra_filters:
+        q["query"]["bool"]["filter"].extend(extra_filters)
+    q["aggs"] = {"ip": {"terms": {"field": ip_field, "size": 1000},
+                        "aggs": {"n": {"value_count": {"field": "@timestamp"}}}}}
+    try:
+        res = es.search(index=index, body=q)
+        return {b["key"]: b["n"]["value"] for b in res["aggregations"]["ip"]["buckets"]}
+    except Exception as e:
+        print(f"[!] {index} ip agg failed: {e}", file=sys.stderr)
+        return {}
+
+
+def _ssh_live_ips(es, rng):
+    """Active SSH IPs: any successful login OR repeated failures (recon/attack level)."""
+    success = _index_ips(es, SSH_INDEX, "source.ip",
+                         [{"term": {"event.outcome": "success"}}, {"exists": {"field": "source.ip"}}], rng)
+    high_fail = _index_ips(es, SSH_INDEX, "source.ip",
+                           [{"term": {"event.outcome": "failure"}}], rng)
+    merged = dict(success)
+    for ip, n in high_fail.items():
+        if n >= SSH_FAIL_THRESHOLD:
+            merged.setdefault(ip, n)
+    return merged
+
+
+def _web_ips(es, rng):
+    return _index_ips(es, ES_INDEX, "client.ip", rng=rng)
+
+
+def _fw_ips(es, rng):
+    return _index_ips(es, FIRE_INDEX, "source.ip",
+                      [{"term": {"event.action": "block"}}, {"exists": {"field": "source.ip"}}], rng)
+
+
+def _allowed_ips():
+    """Trusted admin/VPN source IPs that should not trigger severity-3 on SSH+web overlap."""
+    return set(os.environ.get("SOC_ALLOWED_IPS", "").split(",")) - {""}
 
 
 def main():
@@ -247,6 +394,56 @@ def main():
                 "title": "Potential Attack Chain", "sev": 3, "cls": "attack_chain",
                 "ip": ip, "path": "rules=" + ",".join(sorted(rules)), "query": "",
                 "ua": "", "status": None, "fp": "multi-critical source", "conf": 0.75,
+                "ts": datetime.datetime.utcnow().isoformat() + "Z"
+            })
+
+    # R-013 cross-source correlation: firewall + web
+    for c in firewall_web_correlation(es, a.range):
+        fid = make_finding_id("R-013", c["ip"], c["last_ts"][:14])
+        findings.append({
+            "id": fid, "rule_id": "R-013",
+            "title": "Firewall+Web Correlation - Multi-Layer Attacker",
+            "sev": c["sev"], "cls": "cross_source_correlation", "ip": c["ip"],
+            "path": f"ufw_blocks={c['fw_blocks']}, web_hits={c['web_hits']}", "query": "",
+            "ua": "", "status": None,
+            "fp": "source blocked by UFW also reached nginx", "conf": 0.85,
+            "ts": c["last_ts"]
+        })
+
+    # R-014 SSH brute-force
+    for sb in ssh_brute_detection(es, a.range):
+        fid = make_finding_id("R-014", sb["ip"], sb["last_ts"][:14])
+        findings.append({
+            "id": fid, "rule_id": "R-014",
+            "title": "SSH Brute-Force - Repeated Failed Logins",
+            "sev": 3, "cls": "ssh_bruteforce", "ip": sb["ip"],
+            "path": f"ssh_failures={sb['fails']}, users={sb['users']}", "query": "",
+            "ua": "", "status": None,
+            "fp": "distributed or TOR-scan sources; verify legit VPN ranges", "conf": 0.9,
+            "ts": sb["last_ts"]
+        })
+
+    # R-015 SSH cross-source correlation: IP active in SSH (success or many failures)
+    #     that also touched web or firewall in the window => host-layer + network attacker.
+    ssh_live = _ssh_live_ips(es, a.range)
+    web_ips = _web_ips(es, a.range)
+    fw_ips = _fw_ips(es, a.range)
+    for ip in ssh_live:
+        hit = None; n_web = 0
+        if ip in web_ips:
+            n_web = web_ips[ip]
+        if ip in fw_ips:
+            hit = f"ssh_active + fw_blocks"
+        if (ip in fw_ips) or (ip in web_ips):
+            fid = make_finding_id("R-015", ip, datetime.datetime.utcnow().isoformat())
+            sev = 3 if (ip not in _allowed_ips()) else 1
+            findings.append({
+                "id": fid, "rule_id": "R-015",
+                "title": "SSH Cross-Source Correlation - Host+Network Attacker",
+                "sev": sev, "cls": "ssh_cross_source", "ip": ip,
+                "path": f"web_hits={n_web}, fw_hit={ip in fw_ips}", "query": "",
+                "ua": "", "status": None,
+                "fp": "admin/VPN IP may legitimately hit web+ssh", "conf": 0.7,
                 "ts": datetime.datetime.utcnow().isoformat() + "Z"
             })
 
