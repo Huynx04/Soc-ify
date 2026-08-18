@@ -67,7 +67,7 @@ echo "==> (optional) wire ingest pipeline into the nginx-access index template"
 #   PUT /_index_template/nginx-access  { index_patterns:["nginx-access-*"], template:{settings:{"index.default_pipeline":"nginx-soc-enrich"}} }
 # NOTE: reindexing ALREADY-INDEXED docs is out of scope; new docs get enriched.
 
-echo "==> Schedule note (do this manually or with cron)")
+echo "==> Schedule note (do this manually or with cron)"
 cat <<'NOTE'
 Run detection every 10m (CRON example):
   * * * * *   cd /path/to/soc-ify && python scripts/apply_rules.py --range now-15m >> soc_engine.log 2>&1
