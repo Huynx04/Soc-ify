@@ -10,13 +10,15 @@ Elastic Security / Watcher dependency).
 ```
 Internet → Azure VM → nginx (+ModSecurity CRS + geo-block VN-only)
                        └─ access.log → Filebeat → Elasticsearch (nginx-access-*)
+                       └─ UFW firewall log          → Elasticsearch (fire-ufw-*)
+                       └─ SSH auth log              → Elasticsearch (auth-*)
                                                     │
                           ┌─────────────────────────┤
                           │ ingest-pipeline/nginx-soc-enrich.json
                           │   (classifies attack_class / severity / geoip)
                           └─────────────────────────┤
                           │ scripts/apply_rules.py (scheduled every ~10m)
-                          │   scans logs → writes findings to siem-findings
+                          │   scans nginx+firewall+SSH → siem-findings (R-001..R-015)
                           └─────────────────────────┤
                               triage.py · daily_report.py · Kibana SOC dashboard
 ```
@@ -34,7 +36,9 @@ Internet → Azure VM → nginx (+ModSecurity CRS + geo-block VN-only)
 All scripts read ES credentials from the environment (see `.env.example`):
 - `SOC_ES_HOST` (default `http://localhost:9200`)
 - `SOC_ES_USER`, `SOC_ES_PASS`
-- `SOC_INDEX`, `SOC_FINDINGS`, `SOC_FREQ_THRESHOLD`, `SOC_PATH_DISTINCT`, `SOC_CHAIN_WINDOW`
+- `SOC_INDEX`, `SOC_FINDINGS`, `SOC_FIRE_INDEX`, `SOC_SSH_INDEX`
+- `SOC_FREQ_THRESHOLD`, `SOC_PATH_DISTINCT`, `SOC_CHAIN_WINDOW`
+- `SOC_SSH_FAIL`, `SOC_ALLOWED_IPS`
 
 Real local credentials live in `.env.local` which is **gitignored** — never add it.
 On Windows git-bash export `MSYS_NO_PATHCONV=1` before running curl/tools.
@@ -66,9 +70,12 @@ python populate_soc_panels.py             # fill dashboard panelsJSON layout
 
 ## Detection rules
 
-12 rules live in `rules/detection-rules.yaml` (R-001..R-012): SQLi, XSS, path
+15 rules live in `rules/detection-rules.yaml` (R-001..R-015): SQLi, XSS, path
 traversal, command injection, sensitive-file disclosure, SSRF, scanner UA, admin-panel
-probe, auth scan, geo-block probe, high-request-rate (freq), attack-chain correlation.
+probe, auth scan, geo-block probe, high-request-rate (freq), attack-chain correlation,
+firewall+web correlation (multi-source), SSH brute-force, and SSH cross-source
+correlation. All map to MITRE ATT&CK. The aggregation rules (R-011/012) run over
+`nginx-access-*`; multi-source rules (R-013/014/015) correlate `fire-ufw-*` and `auth-*`.
 Severity 1-4; findings are written with stable `{rule_id, client.ip, window}` keys so
 re-runs upsert (no duplicates).
 
