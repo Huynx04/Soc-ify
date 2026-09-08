@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SOC-ify architecture diagram (SVG). Accurate data-flow from AGENTS.md.
+     Intended to be embedded in README.md. Not a Kibana screenshot. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 640" font-family="'JetBrains Mono',Segoe UI,Consolas,monospace">
+  <defs>
+    <marker id="arw" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#7d93bd"/>
+    </marker>
+    <marker id="arwR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#f0a29e"/>
+    </marker>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="1060" height="640" fill="url(#grid)"/>
+  <rect x="0" y="0" width="1060" height="640" fill="#020617" opacity="0.82"/>
+
+  <!-- ============ top lane : CLOUD / WEB SOC ============ -->
+
+  <!-- ATTACKERS (external) -->
+  <rect x="30"  y="120" width="120" height="70" rx="8" fill="rgba(30,41,59,0.5)"  stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="90"  y="147" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">Attackers</text>
+  <text x="90"  y="164" fill="#94a3b8" font-size="10" text-anchor="middle">internet scans</text>
+  <text x="90"  y="178" fill="#7d8597" font-size="9"  text-anchor="middle">/etc/passwd · sqlmap</text>
+
+  <!-- AZURE VM (boundary + services) -->
+  <rect x="190" y="80"  width="250" height="150" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="7,5"/>
+  <text x="202" y="98" fill="#fbbf24" font-size="10" font-weight="600">azure VM  (public, geo-VN gated)</text>
+  <rect x="205" y="108" width="110" height="105" rx="8" fill="rgba(120,53,15,0.28)" stroke="#fbbf24" stroke-width="1.4"/>
+  <text x="260" y="132" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">nginx</text>
+  <text x="260" y="148" fill="#f5c46b" font-size="8"  text-anchor="middle">ModSecurity CRS</text>
+  <text x="260" y="162" fill="#f5c46b" font-size="8"  text-anchor="middle">access.log (80/443)</text>
+  <text x="260" y="180" fill="#94a3b8" font-size="8"  text-anchor="middle">UFW firewall</text>
+  <text x="260" y="196" fill="#94a3b8" font-size="8"  text-anchor="middle">SSH sshd (auth.log)</text>
+
+  <!-- FILEBEAT -->
+  <rect x="480" y="90"  width="120" height="130" rx="8" fill="rgba(8,51,68,0.42)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="540" y="114" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">Filebeat</text>
+  <text x="540" y="133" fill="#67e8f9" font-size="8.5" text-anchor="middle">nginx access.log</text>
+  <text x="540" y="148" fill="#67e8f9" font-size="8.5" text-anchor="middle">fire-ufw-*</text>
+  <text x="540" y="163" fill="#67e8f9" font-size="8.5" text-anchor="middle">auth-* (SSH)</text>
+  <text x="540" y="188" fill="#94a3b8" font-size="8"  text-anchor="middle">ships to ES</text>
+
+  <!-- ELASTICSEARCH (database/amber node) largest -->
+  <rect x="650" y="70"  width="180" height="160" rx="10" fill="rgba(76,29,149,0.45)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="740" y="98" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">Elasticsearch 8.12</text>
+  <text x="740" y="118" fill="#c4b5fd" font-size="8.5" text-anchor="middle">ingest-pipeline enrich:</text>
+  <text x="740" y="132" fill="#c4b5fd" font-size="8.5" text-anchor="middle">attack_class · severity · geoip</text>
+  <text x="740" y="156" fill="#94a3b8" font-size="8.5" text-anchor="middle">nginx-access-*</text>
+  <text x="740" y="170" fill="#94a3b8" font-size="8.5" text-anchor="middle">fire-ufw-* · auth-*</text>
+  <text x="740" y="184" fill="#94a3b8" font-size="8.5" text-anchor="middle">winlogbeat-*</text>
+
+  <!-- DETECTION ENGINE -->
+  <rect x="875" y="80"  width="145" height="65" rx="8" fill="rgba(136,19,55,0.45)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="947" y="103" fill="#fff" font-size="11.5" font-weight="700" text-anchor="middle">apply_rules.py</text>
+  <text x="947" y="120" fill="#fda4af" font-size="8.5" text-anchor="middle">R-001..R-018 · cron ~10m</text>
+  <text x="947" y="134" fill="#fda4af" font-size="8.5" text-anchor="middle">freq · chain · multi-source · FIM</text>
+
+  <!-- siem-findings -->
+  <rect x="875" y="168" width="145" height="52" rx="8" fill="rgba(136,19,55,0.3)"  stroke="#fb7185" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="947" y="188" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">siem-findings</text>
+  <text x="947" y="203" fill="#94a3b8" font-size="8"  text-anchor="middle">{rule, src_ip, window}</text>
+  <text x="947" y="214" fill="#94a3b8" font-size="8"  text-anchor="middle">case queue</text>
+
+  <!-- KIBANA -->
+  <rect x="875" y="245" width="145" height="150" rx="8" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="947" y="270" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">Kibana (SOC)</text>
+  <text x="947" y="288" fill="#6ee7b7" font-size="8.5" text-anchor="middle">pie + tagcloud views 24h</text>
+  <text x="947" y="303" fill="#6ee7b7" font-size="8"  text-anchor="middle">severity · rule · class</text>
+  <text x="947" y="316" fill="#6ee7b7" font-size="8"  text-anchor="middle">MITRE · status · top IPs</text>
+
+  <!-- ============ bottom lane : WINDOWS ENDPOINT FIM ============ -->
+  <rect x="30"  y="430" width="120" height="70" rx="8" fill="rgba(8,51,68,0.42)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="90"  y="457" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">Windows</text>
+  <text x="90"  y="473" fill="#67e8f9" font-size="8.5" text-anchor="middle">Security 4663</text>
+  <text x="90"  y="488" fill="#67e8f9" font-size="8.5" text-anchor="middle">Sysmon 1 / 5 / 11</text>
+
+  <rect x="190" y="430" width="120" height="70" rx="8" fill="rgba(8,51,68,0.42)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="250" y="457" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">Winlogbeat</text>
+  <text x="250" y="473" fill="#67e8f9" font-size="8.5" text-anchor="middle">Security</text>
+  <text x="250" y="488" fill="#67e8f9" font-size="8.5" text-anchor="middle">Sysmon/Operational</text>
+
+  <!-- ============ arrows top lane ============ -->
+  <!-- attackers -> azure nginx -->
+  <line x1="150" y1="155" x2="203" y2="155" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arw)"/>
+  <text x="176" y="147" fill="#7d8597" font-size="9" text-anchor="middle">:443/:80</text>
+  <!-- azure -> filebeat -->
+  <line x1="440" y1="155" x2="478" y2="155" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arw)"/>
+  <!-- filebeat -> es -->
+  <line x1="600" y1="155" x2="648" y2="155" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arw)"/>
+  <text x="624" y="147" fill="#7d8597" font-size="9" text-anchor="middle">ship</text>
+  <!-- es -> detection -->
+  <line x1="740" y1="230" x2="740" y2="265" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arwR)"/>
+  <text x="752" y="252" fill="#7d8597" font-size="9">detect</text>
+  <!-- detection -> siem -->
+  <line x1="947" y1="145" x2="947" y2="166" stroke="#fb7185" stroke-width="1.2" marker-end="url(#arwR)"/>
+  <!-- siem -> kibana (down) -->
+  <line x1="870" y1="215" x2="760" y2="240" stroke="#34d399" stroke-width="1.4" marker-end="url(#arw)"/>
+  <text x="800" y="232" fill="#7d8597" font-size="8">triage</text>
+
+  <!-- ============ arrows bottom lane ============ -->
+  <!-- windows -> winlogbeat -->
+  <line x1="150" y1="465" x2="188" y2="465" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arw)"/>
+  <!-- winlogbeat -> es (loop up into ES box) -->
+  <path d="M 250 428 L 250 300 L 648 300 L 720 200" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arw)"/>
+  <text x="360" y="292" fill="#7d8597" font-size="9">winlogbeat-*  (host FIM data)</text>
+
+  <!-- ============ FIM notes ============ -->
+  <rect x="560" y="430" width="290" height="96" rx="10" fill="rgba(136,19,55,0.18)" stroke="#fb7185" stroke-width="1" stroke-dasharray="5,4"/>
+  <text x="705" y="452" fill="#fb7185" font-size="10" font-weight="600" text-anchor="middle">host file-integrity rules (no IP)</text>
+  <text x="705" y="472" fill="#94a3b8" font-size="9" text-anchor="middle">R-016  Security 4663 mutation</text>
+  <text x="705" y="487" fill="#94a3b8" font-size="9" text-anchor="middle">R-017  Sysmon FileCreate (evt 11)</text>
+  <text x="705" y="502" fill="#94a3b8" font-size="9" text-anchor="middle">R-018  startup process (evt 1)</text>
+  <text x="705" y="518" fill="#6b7690" font-size="8.5" text-anchor="middle">join by process + path + time</text>
+
+  <!-- ============ badges / title ============ -->
+  <text x="30" y="42" fill="#fff" font-size="19" font-weight="700">SOC-ify — mini SOC pipeline</text>
+  <text x="30" y="62" fill="#94a3b8" font-size="12">detect &#8594; triage &#8594; report  |  Elasticsearch 8.12 · Basic-licensed  |  18 MITRE-mapped rules</text>
+</svg>

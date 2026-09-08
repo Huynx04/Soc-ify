@@ -34,6 +34,11 @@
 
 ## 🏗️ Architecture
 
+<p align="center">
+  <img src="assets/soc-architecture.svg" alt="SOC-ify architecture" width="820"/>
+</p>
+<p align="center"><sub>Architecture · data-flow diagram (not a screenshot)</sub></p>
+
 ```
 Internet ──► Azure VM ──► nginx (+ ModSecurity CRS + geo-block VN-only)
                            │  access.log
@@ -139,6 +144,24 @@ soc-ify/
 > `scripts/enable_file_integrity_audit.ps1`); R-017/018 need Sysmon installed with
 > `Microsoft-Windows-Sysmon/Operational` in winlogbeat (see `sysmon/`). Sysmon FIM
 > events carry **no IP**, so host rules join by process+path+time.
+
+---
+
+## 🧪 Real-world signal (why it's a *lab*, not a toy)
+
+SOC-ify is pointed at a **real public Azure VM** that is continuously scanned on the
+internet, so findings are live traffic — not planted samples. Example output observed
+across the fleet:
+
+| Source | What it caught (sample) |
+|--------|--------------------------|
+| **SSH brute-force** (R-014) | repeated `root`/user password guessing: `109.160.32.81` (10 fails), `138.36.215.108` (7 fails), plus `45.148.10.152`, `80.94.92.55`, `193.47.62.69` (5 fails each) in the same window |
+| **Web attack class** (R-001..R-010) | path traversal / `.env` / `geoserver` probes classified by the ingest pipeline |
+| **Windows FIM** (R-016/017) | host writes under sensitive `System32` paths flagged for process review — majority turn out to be legitimate Windows/Office behaviour (CryptnetUrlCache, `officeclicktorun`) ≈ false positives to triage, exactly like a real SOC |
+
+> Tuned observations go to `siem-findings` (788 open cases in the current index as a
+> live queue), triaged with `triage.py`. This "signal vs. noise" loop is the part of
+> SOC work you can't get from a static rules repo.
 
 ---
 
