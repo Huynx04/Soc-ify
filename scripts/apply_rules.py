@@ -77,6 +77,28 @@ CHAIN_WINDOW = int(os.environ.get("SOC_CHAIN_WINDOW", 15))       # R-012 minutes
 FIRE_INDEX = os.environ.get("SOC_FIRE_INDEX", "fire-ufw-*")      # R-013 firewall source
 SSH_INDEX = os.environ.get("SOC_SSH_INDEX", "auth-*")             # R-014 SSH source
 SSH_FAIL_THRESHOLD = int(os.environ.get("SOC_SSH_FAIL", 5))        # R-014 failures per IP
+WIN_INDEX = os.environ.get("SOC_WIN_INDEX", "winlogbeat-*")        # R-016 integrity source (local Windows)
+INTEGRITY_PATHS = os.environ.get("SOC_INTEGRITY_PATHS", "")         # R-016: regex of sensitive paths (override)
+# R-016: comma-separated basenames of processes allowed to touch sensitive paths (no finding)
+INTEGRITY_TRUSTED_PROCS = {p.strip().lower() for p in
+    os.environ.get("SOC_INTEGRITY_TRUSTED_PROCS", "").split(",") if p.strip()}
+
+# Baseline set of sensitive Windows paths (used when SOC_INTEGRITY_PATHS is empty)
+DEFAULT_INTEGRITY_PATHS = (
+    r"(?i)("
+    r"\\drivers\\etc\\hosts$|\\windows\\system32\\config\\|\\system32\\config\\\\"
+    r"|\\startup\\|\\/.ssh\\|\\.ssh\\\\|\\.env$"
+    r"|\\inetpub\\|web\.config$|autoexec\.bat$"
+    r"|\\windows\\system32\\drivers\\etc\\\\"
+    r")"
+)
+# Baseline trusted OS/benign procs (in addition to SOC_INTEGRITY_TRUSTED_PROCS)
+DEFAULT_TRUSTED_PROCS = {
+    "svchost", "system", "lsass", "winlogon", "services", "csrss", "wininit",
+    "searchindexer", "msmpeng", "explorer", "taskhostw", "backgroundtaskhost",
+    "dllhost", "sihost", "fontdrvhost", "dwm", "lsaiso", "smss", "taskhost",
+    "officec2rclient", "conhost", "runtimebroker", "shellexperiencehost",
+}
 
 # MITRE ATT&CK mapping (mirrors detection-rules.yaml <mitre> block - keep in sync)
 # rule_id -> (technique_id, technique_name, tactic)
@@ -96,6 +118,9 @@ MITRE = {
     "R-013": ("T1595", "Active Scanning (multi-layer recon)", "reconnaissance"),
     "R-014": ("T1110.001", "Brute Force: Password Guessing", "credential-access"),
     "R-015": ("T1078", "Valid Accounts", "persistence"),
+    "R-016": ("T1070", "Indicator Removal on Host", "defense-evasion"),
+    "R-017": ("T1070", "Indicator Removal on Host", "defense-evasion"),
+    "R-018": ("T1547.001", "Boot or Logon Autostart Execution: Startup Folder", "persistence"),
 }
 
 
@@ -347,6 +372,238 @@ def _allowed_ips():
     return set(os.environ.get("SOC_ALLOWED_IPS", "").split(",")) - {""}
 
 
+def _base_name(winpath):
+    """Return lowercase basename of a Windows-ish path (handles \\ and /),
+    with the '.exe' suffix stripped so it matches the bare trusted-proc names."""
+    if not winpath:
+        return ""
+    base = winpath.replace("/", "\\").split("\\")[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+# 4663 AccessMask WRITE/DELETE/mutation bits (Windows File Object access rights).
+# FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_DELETE_CHILD|FILE_WRITE_ATTRIBUTES|
+# DELETE|WRITE_DAC|WRITE_OWNER
+MUTATE_MASK_BITS = 0x2 | 0x4 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000
+_MUTATE_TEXT = r"(?i)\b(WriteData|AddFile|AppendData|Delete|ChangePermissions|WriteAttributes|ObjectAccessRight)\b"
+
+
+def _is_mutation(ed, message):
+    """True when the 4663 handle was opened for a MUTATION (write/append/delete/
+    permission/attribute change). Relies on AccessMask (hex) primarily because
+    AccessList comes localized as %%NNNN tokens (no 'WriteData' text)."""
+    al = ed.get("AccessList", "") or message or ""
+    if re.search(_MUTATE_TEXT, al):
+        return True
+    am = ed.get("AccessMask", "")
+    if am:
+        try:
+            mask = int(am, 16) if am.lower().startswith("0x") else int(am)
+            return bool(mask & MUTATE_MASK_BITS)
+        except ValueError:
+            pass
+    return False
+
+
+def integrity_detection(es, rng):
+    """R-016: file-integrity correlation on the local Windows host.
+
+    Detects Windows Security event 4663 (Object Access / File System) targeting a
+    SENSITIVE path where the handle was opened for a MUTATION (write/append/delete/
+    permission-change) by a process NOT on the trusted list.
+
+    Host-local correlation note: these events carry NO `source.ip` (unlike nginx/
+    SSH/firewall). So unlike R-013/014/015 this rule joins by PROCESS + path + time
+    within the one host, not by source IP. It is in-host integrity monitoring.
+
+    PERFORMANCE: after the File System audit is enabled, `System32\config` (default
+    SACL) floods thousands of 4663/min from svchost/sihost. We therefore push the
+    mutation AccessMask filter into the ES query (terms) so only mutation opens are
+    returned; a naive top-N scroll would otherwise miss older events in the flood.
+
+    Requires auditpol + SACL on protected folders — until then returns 0 findings.
+    """
+    path_re = re.compile(INTEGRITY_PATHS) if INTEGRITY_PATHS else re.compile(DEFAULT_INTEGRITY_PATHS)
+    # access-mask strings that ES returns for mutation opens (see MUTATE_MASK_BITS)
+    mask_terms = ["0x2", "0x4", "0x6", "0x40", "0x100", "0x10000", "0x40000", "0x80000"]
+    hits = []
+    search_after = None
+    while True:
+        body = {
+            "size": 1000,
+            "_source": ["@timestamp", "winlog.event_data", "winlog.event_id",
+                        "message", "host.name", "agent.name"],
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": rng}}},
+                {"term": {"winlog.event_id": "4663"}},
+                {"terms": {"winlog.event_data.AccessMask": mask_terms}},
+            ]}},
+            "sort": [{"@timestamp": {"order": "asc"}}],
+        }
+        if search_after:
+            body["search_after"] = search_after
+        res = es.search(index=WIN_INDEX, body=body)
+        batch = res["hits"]["hits"]
+        if not batch:
+            break
+        hits.extend(batch)
+        search_after = batch[-1]["sort"]
+        if len(batch) < 1000:
+            break
+    out = []
+    for h in hits:
+        s = h.get("_source", {})
+        ed = (s.get("winlog", {}) or {}).get("event_data", {}) or {}
+        obj = ed.get("ObjectName", "") or s.get("message", "")
+        if not path_re.search(obj):
+            continue
+        proc = _base_name(ed.get("ProcessName", ""))
+        if proc in INTEGRITY_TRUSTED_PROCS or proc in DEFAULT_TRUSTED_PROCS:
+            continue
+        ts = s.get("@timestamp", "") or ""
+        out.append({
+            "obj": obj, "proc": proc or "?", "user": ed.get("SubjectUserName", "?") or "?",
+            "access": "mask=" + (ed.get("AccessMask", "?") or "?"),
+            "host": (s.get("host", {}) or {}).get("name", "")
+                    or (s.get("agent", {}) or {}).get("name", "")
+                    or "local",
+            "ts": ts,
+        })
+    return out
+
+
+# --- Sysmon-based FIM (R-017 FileCreate / R-018 ProcessCreate) ---
+# Sysmon writes to Microsoft-Windows-Sysmon/Operational; winlogbeat maps fields into
+# winlog.event_data.* (TargetFilename, Image, ParentImage, Hashes, User, CommandLine).
+
+def _win_source_host(s):
+    """Best-effort host name from a winlogbeat source dict."""
+    h = s.get("host", {}) or {}
+    return h.get("name", "") or (s.get("agent", {}) or {}).get("name", "") or "local"
+
+
+# Paths that, when a Sysmon event-11 file is created under them, are sensitive
+# (mirrors DEFAULT_INTEGRITY_PATHS so R-017/R-016 share the same notion).
+SYSMON_SENSITIVE_PATHS = re.compile(
+    r"(?i)(startup|\.ssh|\.env$|web\.config$|inetpub|autoexec\.bat)"
+)
+
+
+def _sysmon_env_source(ed):
+    """Extract {obj, proc, parent, hash, user, cmd} from a Sysmon event_data dict."""
+    return {
+        # R-017: file path created
+        "obj": ed.get("TargetFilename", "") or ed.get("ObjectName", ""),
+        # process doing the file action (event 11) or the new process (event 1)
+        "proc": _base_name(ed.get("Image", "")),
+        "parent": _base_name(ed.get("ParentImage", "")),
+        "hash": (ed.get("Hashes", "") or "").split("=")[-1],  # "...SHA256=<hex>"
+        "user": ed.get("User", "?") or "?",
+        "cmd": ed.get("CommandLine", "") or "",
+    }
+
+
+def sysmon_file_create_detection(es, rng):
+    """R-017: Sysmon event 11 (FileCreate) on a sensitive path -> finding with hash."""
+    hits = []
+    search_after = None
+    queries = [
+        {"term": {"winlog.event_id": "11"}},  # FileCreate
+    ]
+    # event ids map differently per index; keep an OR of both shapes to be safe
+    while True:
+        body = {
+            "size": 1000,
+            "_source": ["@timestamp", "winlog.event_data", "winlog.event_id",
+                        "message", "host.name", "agent.name", "file.hash"],
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": rng}}},
+                {"bool": {"should": [
+                    {"term": {"winlog.event_id": "11"}},
+                    {"term": {"winlog.channel": "Microsoft-Windows-Sysmon/Operational"}},
+                ], "minimum_should_match": 1}},
+            ]}},
+            "sort": [{"@timestamp": {"order": "asc"}}],
+        }
+        if search_after:
+            body["search_after"] = search_after
+        res = es.search(index=WIN_INDEX, body=body)
+        batch = res["hits"]["hits"]
+        if not batch:
+            break
+        hits.extend(batch)
+        search_after = batch[-1]["sort"]
+        if len(batch) < 1000:
+            break
+
+    out = []
+    for h in hits:
+        s = h.get("_source", {})
+        ed = (s.get("winlog", {}) or {}).get("event_data", {}) or {}
+        # only Sysmon event 11 (FileCreate); skip if channel isn't Sysmon
+        if str(ed.get("Image", "")) and int(s.get("winlog", {}).get("event_id", 0) or 0) != 11:
+            continue
+        obj = ed.get("TargetFilename", "")
+        if not obj or not SYSMON_SENSITIVE_PATHS.search(obj):
+            continue
+        m = _sysmon_env_source(ed)
+        out.append({
+            "obj": obj, "proc": m["proc"] or "?", "user": m["user"],
+            "hash": m["hash"], "host": _win_source_host(s),
+            "ts": s.get("@timestamp", "") or "",
+        })
+    return out
+
+
+def sysmon_proc_create_detection(es, rng):
+    """R-018: Sysmon event 1 (ProcessCreate) whose Image is under Startup, parked
+    on a non-explorer parent -> persistence-execution signal."""
+    hits = []
+    search_after = None
+    while True:
+        body = {
+            "size": 1000,
+            "_source": ["@timestamp", "winlog.event_data", "winlog.event_id",
+                        "message", "host.name", "agent.name"],
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": rng}}},
+                {"term": {"winlog.event_id": "1"}},
+            ]}},
+            "sort": [{"@timestamp": {"order": "asc"}}],
+        }
+        if search_after:
+            body["search_after"] = search_after
+        res = es.search(index=WIN_INDEX, body=body)
+        batch = res["hits"]["hits"]
+        if not batch:
+            break
+        hits.extend(batch)
+        search_after = batch[-1]["sort"]
+        if len(batch) < 1000:
+            break
+
+    out = []
+    for h in hits:
+        s = h.get("_source", {})
+        ed = (s.get("winlog", {}) or {}).get("event_data", {}) or {}
+        img = ed.get("Image", "")
+        if not img:
+            continue
+        if re.search(r"(?i)\\\\startup\\\\", img):
+            m = _sysmon_env_source(ed)
+            # legit launches through explorer are excluded; anything else flagged
+            if m["parent"] == "explorer":
+                continue
+            if m["proc"] in DEFAULT_TRUSTED_PROCS:
+                continue
+            out.append({
+                "obj": img, "proc": m["proc"] or "?", "user": m["user"],
+                "parent": m["parent"], "cmd": m["cmd"], "host": _win_source_host(s),
+                "ts": s.get("@timestamp", "") or "",
+            })
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--range", default="now-15m", help="ES time range to scan")
@@ -453,6 +710,52 @@ def main():
                 "fp": "admin/VPN IP may legitimately hit web+ssh", "conf": 0.7,
                 "ts": datetime.datetime.utcnow().isoformat() + "Z"
             })
+
+    # R-016 file-integrity correlation (Windows 4663 Object Access, host-local).
+    # Join by process/path/time within the one host (no source.ip on these events).
+    for it in integrity_detection(es, a.range):
+        ts = it.get("ts") or datetime.datetime.utcnow().isoformat() + "Z"
+        # stable id per host+minute+file so re-runs upsert (not dedupe on same host/minute)
+        fid = hashlib.sha256(f"R-016|{it['host']}|{ts[:14]}|{it['obj']}".encode()).hexdigest()[:40]
+        findings.append({
+            "id": fid, "rule_id": "R-016",
+            "title": "Sensitive File Modified - Integrity Correlation",
+            "sev": 3, "cls": "file_integrity", "ip": it["host"],
+            "path": it["obj"], "query": f"process={it['proc']}, user={it['user']}", "ua": "",
+            "status": None,
+            "fp": "Windows updates/installers may legitimately touch System32; verify process", "conf": 0.8,
+            "ts": ts
+        })
+
+    # R-017 Sysmon FileCreate (event 11) on sensitive path → hash-carrying finding
+    for it in sysmon_file_create_detection(es, a.range):
+        ts = it.get("ts") or datetime.datetime.utcnow().isoformat() + "Z"
+        fid = hashlib.sha256(f"R-017|{it['host']}|{ts[:14]}|{it['obj']}".encode()).hexdigest()[:40]
+        dump = f"process={it['proc']}, user={it['user']}, hash={it['hash']}"
+        findings.append({
+            "id": fid, "rule_id": "R-017",
+            "title": "Sysmon File Created in Sensitive Location",
+            "sev": 3, "cls": "file_integrity", "ip": it["host"],
+            "path": it["obj"], "query": dump, "ua": "",
+            "status": None,
+            "fp": "Legit installer/autostart may drop files in Startup; verify hash/process", "conf": 0.8,
+            "ts": ts
+        })
+
+    # R-018 Sysmon ProcessCreate (event 1) launched from Startup, non-explorer parent
+    for it in sysmon_proc_create_detection(es, a.range):
+        ts = it.get("ts") or datetime.datetime.utcnow().isoformat() + "Z"
+        fid = hashlib.sha256(f"R-018|{it['host']}|{ts[:14]}|{it['obj']}".encode()).hexdigest()[:40]
+        dump = f"parent={it.get('parent','?')}, user={it['user']}, cmd={it['cmd']}".strip()
+        findings.append({
+            "id": fid, "rule_id": "R-018",
+            "title": "Sysmon Process Launched from Startup Path",
+            "sev": 3, "cls": "persistence", "ip": it["host"],
+            "path": it["obj"], "query": dump, "ua": "",
+            "status": None,
+            "fp": "User manually runs Startup shortcut via explorer (excluded); legit vendors whitelisted", "conf": 0.75,
+            "ts": ts
+        })
 
     # dedupe by id (keep max severity)
     dedup = {}

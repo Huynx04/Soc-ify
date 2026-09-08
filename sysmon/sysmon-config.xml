@@ -1,0 +1,39 @@
+<!--
+  SOC-ify minimal Sysmon config for File Integrity Monitoring (FIM).
+  LOGGING ONLY — no blocking.
+  NOTE: <FileDelete> is intentionally OMITTED — loading it causes a driver-load
+  crash (0xC0000409) on Sysmon 15.21 (verified: FileCreate-only loads OK, adding
+  FileDelete crashes). R-017 relies on FileCreate (event 11) which is the core signal.
+  Trusted OS hosts excluded from ProcessCreate to keep R-018 (event 1) noise low.
+-->
+<Sysmon schemaversion="4.50">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <CheckRevocation/>
+
+  <EventFiltering>
+    <RuleGroup name="soc-proc-create" groupRelation="or">
+      <ProcessCreate onmatch="exclude">
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+        <Image condition="is">C:\Windows\System32\lsass.exe</Image>
+        <Image condition="is">C:\Windows\System32\explorer.exe</Image>
+        <Image condition="is">C:\Windows\System32\RuntimeBroker.exe</Image>
+        <Image condition="is">C:\Windows\System32\conhost.exe</Image>
+        <Image condition="is">C:\Windows\System32\sihost.exe</Image>
+        <Image condition="is">C:\Windows\System32\wininit.exe</Image>
+        <Image condition="is">C:\Windows\System32\csrss.exe</Image>
+        <Image condition="is">C:\Windows\System32\services.exe</Image>
+        <Image condition="is">C:\Windows\System32\smss.exe</Image>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- R-017: file created under sensitive locations (Event 11, has SHA256 hash) -->
+    <RuleGroup name="soc-file-create" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">Startup</TargetFilename>
+        <TargetFilename condition="contains">\inetpub\</TargetFilename>
+        <TargetFilename condition="endswith">web.config</TargetFilename>
+        <TargetFilename condition="endswith">.env</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>

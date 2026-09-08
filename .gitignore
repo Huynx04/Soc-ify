@@ -27,3 +27,7 @@ Thumbs.db
 
 # Optional - uncomment if you don't want generated files in repo
 # soc_engine.log
+
+# Sysmon binaries (Microsoft redistributable EULA) - never commit
+sysmon/Sysmon64.exe
+sysmon/Sysmon.zip

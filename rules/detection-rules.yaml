@@ -278,6 +278,82 @@ rules:
       Admin or VPN source IP may legitimately hit both web and SSH; list trusted IPs in
       SOC_ALLOWED_IPS to downgrade severity.
 
+  # [16] FILE INTEGRITY CORRELATION - sensitive file modified by non-trusted process
+  #      (in-host correlation on the local Windows client via winlogbeat Security 4663)
+  - id: R-016
+    title: "Sensitive File Modified - Integrity Correlation"
+    severity: high
+    confidence: 0.8
+    attack_class: file_integrity
+    mitre:
+      id: T1070
+      technique: "Indicator Removal on Host"
+      tactic: defense-evasion
+    detection:
+      logic: |
+        Windows Security event 4663 (Object Access / File System) on winlogbeat-*
+        where ObjectName is on a sensitive path (hosts, System32\config, Startup,
+        .ssh, .env, web.config, inetpub) AND the access is a MUTATION
+        (WriteData/AppendData/Delete/ChangePermissions) AND the ProcessName is not
+        on the trusted list (SOC_INTEGRITY_TRUSTED_PROCS or OS baseline).
+        Join is by PROCESS + path + time within the one host — these events carry
+        NO source.ip, so unlike R-013/014/015 this correlation is NOT IP-based.
+        Depends on 'File System' audit (auditpol subcategory + SACL on the folder);
+        until enabled there are no findings (expected).
+    false_positive: |
+      Windows Update / legitimate installers may write under System32. Trusted OS
+      processes (svchost, lsass, explorer, ...) are pre-excluded; verify any other
+      process and add it to SOC_INTEGRITY_TRUSTED_PROCS if expected.
+
+  # [17] SYSMON FILE CREATE CORRELATION - file created in sensitive location (has hash)
+  #      (in-host FIM enhancement: Sysmon event 11 on Microsoft-Windows-Sysmon/Operational,
+  #       winlogbeat-* — richer than 4663 because it carries file name + SHA256 hash)
+  - id: R-017
+    title: "Sysmon File Created in Sensitive Location"
+    severity: high
+    confidence: 0.8
+    attack_class: file_integrity
+    mitre:
+      id: T1070
+      technique: "Indicator Removal on Host"
+      tactic: defense-evasion
+    detection:
+      logic: |
+        Sysmon event 11 (FileCreate) on winlogbeat-* where TargetFilename is under
+        a sensitive path: Startup folder, .ssh, inetpub/webroot, *.env, web.config.
+        Ships the file hash (file.hash.sha256) so findings can be cross-checked
+        against IOC/lookups. Requires Sysmon installed (sysmon/sysmon-config.xml)
+        and the Microsoft-Windows-Sysmon/Operational channel enabled in winlogbeat.
+        Complements R-016 (Security 4663) with a stronger, hash-carrying signal.
+        Join is host-local by TargetFilename + process + time (no source.ip).
+    false_positive: |
+      Legit installer/autostart entries may drop files into Startup. Whitelist known
+      good processes (add to SOC_INTEGRITY_TRUSTED_PROCS / Sysmon config exclude) and
+      verify hash against expected software catalog.
+
+  # [18] SYSMON PROCESS LAUNCH FROM STARTUP - persistence execution
+  #      (Sysmon event 1 ProcessCreate, Image under Startup -> indicates a
+  #       persistence attempt being executed, e.g. dropped malware autostart)
+  - id: R-018
+    title: "Sysmon Process Launched from Startup Path"
+    severity: high
+    confidence: 0.75
+    attack_class: persistence
+    mitre:
+      id: T1547.001
+      technique: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+      tactic: persistence
+    detection:
+      logic: |
+        Sysmon event 1 (ProcessCreate) on winlogbeat-* where Image resolves under
+        the Startup folder (User or Common) AND the parent process is NOT 'explorer.exe'
+        (legit interaction) nor a trusted OS process. Combined with R-017 (file dropped
+        in Startup) this forms a persistence chain. Requires Sysmon installed.
+    false_positive: |
+      User manually running a shortcut from Startup launches via explorer (excluded).
+      Some legitimate autostart apps (Office, telemetry) install services; whitelist
+      known vendor images in Sysmon config.
+
 # NOTE ON TRIAL LICENSE:
 # The Elastic trial (your current license, expiry soon->Basic) ENABLES Watcher + Detection Rules + Transforms
 # while active, but these STOP or are restricted when it drops to Basic.

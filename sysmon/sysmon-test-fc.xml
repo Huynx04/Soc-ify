@@ -1,0 +1,11 @@
+<Sysmon schemaversion="4.50">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <CheckRevocation/>
+  <EventFiltering>
+    <RuleGroup name="soc-test-fc" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">Startup</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>
