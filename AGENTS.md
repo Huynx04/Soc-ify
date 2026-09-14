@@ -71,16 +71,17 @@ python populate_soc_panels.py             # fill dashboard panelsJSON layout
 
 ## Detection rules
 
-18 rules live in `rules/detection-rules.yaml` (R-001..R-018): SQLi, XSS, path
+19 rules live in `rules/detection-rules.yaml` (R-001..R-019): SQLi, XSS, path
 traversal, command injection, sensitive-file disclosure, SSRF, scanner UA, admin-panel
 probe, auth scan, geo-block probe, high-request-rate (freq), attack-chain correlation,
 firewall+web correlation (multi-source), SSH brute-force, SSH cross-source
 correlation, file-integrity correlation (R-016, local Windows 4663), Sysmon file-create
-(R-017, event 11) and Sysmon startup process-launch (R-018, event 1). All map to
+(R-017, event 11), Sysmon startup process-launch (R-018, event 1) and AIDE Linux
+file-integrity (R-019, ECS docs in `logs-aide.check-*`). All map to
 MITRE ATT&CK. The aggregation rules (R-011/012) run over `nginx-access-*`;
 multi-source rules (R-013/014/015) correlate `fire-ufw-*` and `auth-*`; R-016/R-017/R-018 are
 in-host (joins by process/path/time on `winlogbeat-*`, NOT by IP — 4663/Sysmon have no
-source.ip). The Windows File System audit (auditpol + SACL) must be enabled on the
+source.ip); R-019 is likewise host-local (Linux AIDE → `logs-aide.check-*`, `SOC_AIDE_INDEX`). The Windows File System audit (auditpol + SACL) must be enabled on the
 client for R-016 to produce findings; see `scripts/enable_file_integrity_audit.ps1`.
 R-017/R-018 require **Sysmon** installed (see `sysmon/sysmon-config.xml`) with the
 `Microsoft-Windows-Sysmon/Operational` channel enabled in winlogbeat.yml; the security

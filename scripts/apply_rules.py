@@ -78,6 +78,7 @@ FIRE_INDEX = os.environ.get("SOC_FIRE_INDEX", "fire-ufw-*")      # R-013 firewal
 SSH_INDEX = os.environ.get("SOC_SSH_INDEX", "auth-*")             # R-014 SSH source
 SSH_FAIL_THRESHOLD = int(os.environ.get("SOC_SSH_FAIL", 5))        # R-014 failures per IP
 WIN_INDEX = os.environ.get("SOC_WIN_INDEX", "winlogbeat-*")        # R-016 integrity source (local Windows)
+AIDE_INDEX = os.environ.get("SOC_AIDE_INDEX", "logs-aide.check-*")  # R-019 AIDE FIM source (Linux host)
 INTEGRITY_PATHS = os.environ.get("SOC_INTEGRITY_PATHS", "")         # R-016: regex of sensitive paths (override)
 # R-016: comma-separated basenames of processes allowed to touch sensitive paths (no finding)
 INTEGRITY_TRUSTED_PROCS = {p.strip().lower() for p in
@@ -121,6 +122,7 @@ MITRE = {
     "R-016": ("T1070", "Indicator Removal on Host", "defense-evasion"),
     "R-017": ("T1070", "Indicator Removal on Host", "defense-evasion"),
     "R-018": ("T1547.001", "Boot or Logon Autostart Execution: Startup Folder", "persistence"),
+    "R-019": ("T1565.001", "Stored Data Manipulation (Linux file-integrity, AIDE)", "impact"),
 }
 
 
@@ -604,6 +606,80 @@ def sysmon_proc_create_detection(es, rng):
     return out
 
 
+# --- AIDE-based FIM (R-019) ---
+# AIDE (Advanced Intrusion Detection Environment) runs on the Linux web host and
+# emits one ECS-normalised doc per changed file into the data stream
+# `logs-aide.check-*` (see vm/aide-nginx-check.sh + ingest pipeline ecs-aide-check).
+# Fields: file.path, file.directory, event.action (file_created|file_modified|
+# file_deleted), event.module=aide, host.name. This mirrors R-017 (Sysmon FileCreate)
+# but for Linux — it gives the SOC a second, cross-platform FIM source.
+#
+# Join is host-local by path + change-type + time (AIDE events carry NO source.ip).
+AIDE_SENSITIVE_PATHS = re.compile(
+    r"(?i)(/etc/nginx/|/usr/share/nginx/html/|/var/www/|/etc/passwd$|/etc/shadow$|"
+    r"/etc/sudoers|/etc/cron\.|/etc/cron\.d/|/etc/cron\.hourly/|/etc/ssh/sshd_config|"
+    r"/etc/systemd/system/(?!.*\.(wants|mount)$))"
+)
+# NOTE: the systemd alternative uses a negative lookahead to skip the auto-managed
+# *.wants dirs and *.mount units (snap/systemd churn) — these are already excluded at
+# the AIDE config layer, but keeping them out here is defence-in-depth so the rule
+# stays quiet even if that exclusion is ever removed.
+# event.action values that represent an actual content/permission mutation
+AIDE_MUTATION_ACTIONS = {"file_created", "file_modified", "file_deleted"}
+
+
+def aide_fim_detection(es, rng):
+    """R-019: AIDE file-integrity changes on a sensitive Linux path.
+
+    Reads ECS docs from logs-aide.check-* (module=aide). Any doc whose
+    file.path matches a sensitive path AND whose event.action is a mutation
+    (created/modified/deleted) becomes a finding. Heartbeat / summary docs are
+    ignored (they have no file.path or action=heartbeat/file-integrity).
+    """
+    out = []
+    search_after = None
+    while True:
+        body = {
+            "size": 1000,
+            "_source": ["@timestamp", "file.path", "file.directory",
+                        "event.action", "event.module", "host.name", "message"],
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": rng}}},
+                {"term": {"event.module": "aide"}},
+                {"exists": {"field": "file.path"}},
+            ]}},
+            "sort": [{"@timestamp": {"order": "asc"}}],
+        }
+        if search_after:
+            body["search_after"] = search_after
+        try:
+            res = es.search(index=AIDE_INDEX, body=body)
+        except Exception:
+            break  # index may not exist yet on a fresh deployment
+        batch = res["hits"]["hits"]
+        if not batch:
+            break
+        for h in batch:
+            s = h.get("_source", {})
+            path = (s.get("file", {}) or {}).get("path", "")
+            action = (s.get("event", {}) or {}).get("action", "")
+            if not path or action not in AIDE_MUTATION_ACTIONS:
+                continue
+            if not AIDE_SENSITIVE_PATHS.search(path):
+                continue
+            out.append({
+                "obj": path,
+                "dir": (s.get("file", {}) or {}).get("directory", ""),
+                "action": action,
+                "host": (s.get("host", {}) or {}).get("name", "Nginx"),
+                "ts": s.get("@timestamp", "") or "",
+            })
+        search_after = batch[-1]["sort"]
+        if len(batch) < 1000:
+            break
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--range", default="now-15m", help="ES time range to scan")
@@ -754,6 +830,23 @@ def main():
             "path": it["obj"], "query": dump, "ua": "",
             "status": None,
             "fp": "User manually runs Startup shortcut via explorer (excluded); legit vendors whitelisted", "conf": 0.75,
+            "ts": ts
+        })
+
+    # R-019 AIDE file-integrity (Linux host) - sensitive path created/modified/deleted.
+    # Cross-platform sibling of R-017: same idea, different OS + tool.
+    for it in aide_fim_detection(es, a.range):
+        ts = it.get("ts") or datetime.datetime.utcnow().isoformat() + "Z"
+        fid = hashlib.sha256(f"R-019|{it['host']}|{ts[:14]}|{it['obj']}|{it['action']}".encode()).hexdigest()[:40]
+        sev = 4 if it["action"] == "file_created" else 3   # new file in a sensitive path is worse
+        findings.append({
+            "id": fid, "rule_id": "R-019",
+            "title": "AIDE File Integrity Change - Sensitive Linux Path",
+            "sev": sev, "cls": "file_integrity", "ip": it["host"],
+            "path": it["obj"], "query": f"action={it['action']}, dir={it['dir']}", "ua": "",
+            "status": None,
+            "fp": "Legit package update/config change may touch these paths; verify against change window",
+            "conf": 0.8,
             "ts": ts
         })
 

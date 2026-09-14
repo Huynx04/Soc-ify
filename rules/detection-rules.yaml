@@ -354,6 +354,37 @@ rules:
       Some legitimate autostart apps (Office, telemetry) install services; whitelist
       known vendor images in Sysmon config.
 
+  # [19] AIDE FILE INTEGRITY - sensitive Linux path created/modified/deleted
+  #      (Linux-host FIM: AIDE on the nginx VM emits one ECS doc per changed file
+  #       into logs-aide.check-*; the cross-platform sibling of R-017)
+  - id: R-019
+    title: "AIDE File Integrity Change - Sensitive Linux Path"
+    severity: high
+    confidence: 0.8
+    attack_class: file_integrity
+    mitre:
+      id: T1565.001
+      technique: "Stored Data Manipulation"
+      tactic: impact
+    detection:
+      logic: |
+        AIDE on the Linux nginx host produces one ECS-normalised doc per changed
+        file in the data stream logs-aide.check-* (event.module=aide,
+        event.action=file_created|file_modified|file_deleted, file.path). A finding
+        is raised when file.path matches a sensitive location (/etc/nginx/,
+        /usr/share/nginx/html/, /var/www/, /etc/passwd, /etc/shadow, /etc/sudoers,
+        cron, /etc/systemd/system/, sshd_config) AND the action is a mutation.
+        Heartbeat/summary docs are ignored. Join is host-local by path + change-type
+        + time — AIDE events carry NO source.ip.
+        New files in a sensitive path are severity 4 (possible webshell drop); other
+        mutations are severity 3. This is the Linux counterpart of R-017 (Sysmon
+        FileCreate on Windows), giving cross-platform FIM coverage.
+    false_positive: |
+      Legitimate package updates, config edits, and cron/unit changes will touch
+      these paths; that is why the noisy /opt/splunkforwarder + snap mount units are
+      excluded at the AIDE config layer (see 99_aide_nginx_soc). Verify any finding
+      against the known change window before escalating.
+
 # NOTE ON TRIAL LICENSE:
 # The Elastic trial (your current license, expiry soon->Basic) ENABLES Watcher + Detection Rules + Transforms
 # while active, but these STOP or are restricted when it drops to Basic.

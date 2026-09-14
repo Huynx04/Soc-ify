@@ -48,7 +48,7 @@ Internet ──► Azure VM ──► nginx (+ ModSecurity CRS + geo-block VN-on
                            │  fire-ufw-*            (attack_class · severity · geoip)
                            │  SSH auth log auth-*           │
                            │                     scripts/apply_rules.py  ◄─ cron
-Windows endpoint ──► winlogbeat ──► winlogbeat-*            (R-001..R-018 detection)
+Windows endpoint ──► winlogbeat ──► winlogbeat-*            (R-001..R-019 detection)
 (Security 4663 + Sysmon)                                  │
                            ├──────────► siem-findings (case queue)
                            │              │   ◄─ triage.py · daily_report.py
@@ -60,7 +60,7 @@ Windows endpoint ──► winlogbeat ──► winlogbeat-*            (R-001..
 2. **Ingest pipeline** classifies each request → `soc.attack_class`, `soc.severity`,
    `soc.confidence`, plus ECS (`http.*`, `url.*`) and GeoIP.
 3. **`apply_rules.py`** (scheduled) scans recent logs from nginx + firewall + SSH +
-   winlogbeat, tags hits with rule IDs (R-001..R-018), writes non-duplicated findings
+   winlogbeat, tags hits with rule IDs (R-001..R-019), writes non-duplicated findings
    to `siem-findings`.
 4. **Triage** labels findings, removes auto-FPs.
 5. **Kibana dashboard + daily report** turn raw events into decisions.
@@ -78,14 +78,14 @@ soc-ify/
 ├── ingest-pipelines/
 │   └── nginx-soc-enrich.json     # attack classification + ECS + GeoIP (validated)
 ├── rules/
-│   └── detection-rules.yaml      # 18 Sigma-style rules (R-001..R-018)
+│   └── detection-rules.yaml      # 19 Sigma-style rules (R-001..R-019)
 ├── transforms/
 │   └── freq-detection-by-ip.json # R-011 frequency transform
 ├── docs/
 │   └── MULTI_SOURCE_CORRELATION_PLAN.md
 ├── scripts/
 │   ├── deploy.sh                 # apply pipeline/template/transform to ES
-│   ├── apply_rules.py            # detection engine R-001..R-018 (scheduled)
+│   ├── apply_rules.py            # detection engine R-001..R-019 (scheduled)
 │   ├── triage.py                 # case lifecycle + auto-FP
 │   ├── daily_report.py           # SOC daily report → MD/HTML
 │   ├── build_soc_summary_xlsx.py # export SOC summary to xlsx
@@ -134,16 +134,23 @@ soc-ify/
 | R-016 | Sensitive File Modified (4663 FIM) | High | `file_integrity` | winlogbeat (Security 4663) |
 | R-017 | Sysmon File Create in sensitive path | High | `file_integrity` | winlogbeat (Sysmon evt 11) |
 | R-018 | Sysmon Process launched from Startup | High | `persistence` | winlogbeat (Sysmon evt 1) |
+| R-019 | AIDE File Integrity - sensitive Linux path | High | `file_integrity` | AIDE (logs-aide.check-*) |
 
 > Signature rules (R-001..R-010) mirror what ModSecurity CRS catches at the edge; the
 > **value-add** is correlation — single-source (R-011/R-012), **multi-source**
 > (R-013/R-015) across nginx, UFW firewall, and SSH auth logs, and **host FIM**
-> (R-016/017/018) across a Windows endpoint via winlogbeat — plus a **persistent triage
-> queue** a layer-7 WAF can't provide. All 18 rules map to **MITRE ATT&CK**.
+> (R-016/017/018) across a Windows endpoint via winlogbeat, plus **Linux FIM** (R-019)
+> via AIDE on the nginx VM — giving **cross-platform file-integrity coverage**
+> (Windows Sysmon ⇄ Linux AIDE) — plus a **persistent triage
+> queue** a layer-7 WAF can't provide. All 19 rules map to **MITRE ATT&CK**.
 > R-016 needs the File System audit (auditpol + SACL) enabled on the client (see
 > `scripts/enable_file_integrity_audit.ps1`); R-017/018 need Sysmon installed with
 > `Microsoft-Windows-Sysmon/Operational` in winlogbeat (see `sysmon/`). Sysmon FIM
 > events carry **no IP**, so host rules join by process+path+time.
+> R-019 consumes ECS-normalised AIDE docs (one per changed file, `event.action` =
+> file_created/modified/deleted) from the data stream `logs-aide.check-*`; noisy
+> paths (Splunk forwarder, snap mounts) are excluded at the AIDE config layer so the
+> baseline is clean. Like R-016/017 it joins host-local (AIDE events carry no IP).
 
 ---
 
