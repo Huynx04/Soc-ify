@@ -250,6 +250,16 @@ Import `dashboards/soc_overview.ndjson` via **Stack Management → Saved Objects
 (overwrite), or follow `dashboards/SOC_OVERVIEW.md` to build panels by hand. Enable 5 s
 auto-refresh for a live SOC feel.
 
+> 📸 **Screenshot:** drop a real Kibana dashboard capture at
+> `assets/kibana-dashboard.png` and it will render below.
+>
+> <!-- Uncomment once assets/kibana-dashboard.png exists:
+> ![SOC Kibana dashboard](assets/kibana-dashboard.png)
+> -->
+>
+> Panels: Severity · Rule · Attack Class · MITRE Tactic · Status · SSH Top IPs · UFW Top IPs.
+> (If the image is missing, the block stays commented out — no broken image in the README.)
+
 ---
 
 ## ✅ Verification checklist
