@@ -12,7 +12,7 @@
 
 - 🛡️ **Ingest-pipeline enrichment** — auto-classifies every request into an attack class
   (SQLi, XSS, path traversal, command injection, SSRF, scanner…) with severity + confidence.
-- 🔍 **18 detection rules** (Sigma-style), mapped to MITRE ATT&CK — from single-request
+- 🔍 **19 detection rules** (Sigma-style), mapped to MITRE ATT&CK — from single-request
   signatures to **frequency** (scan/brute-force), **attack-chain** correlation,
   **multi-source** correlation across nginx + UFW firewall + SSH auth logs, and
   **host file-integrity** (FIM) on a Windows endpoint.
@@ -112,7 +112,7 @@ soc-ify/
 
 ---
 
-## 🔌 Detection rules (R-001…018)
+## 🔌 Detection rules (R-001…019)
 
 | ID | Title | Sev | Class | Source |
 |----|-------|-----|-------|--------|
