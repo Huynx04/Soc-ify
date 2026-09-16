@@ -152,6 +152,31 @@ they cannot reach the ES copy (different host, `100.117.2.50`). This is the
 
 Only after step 3 is complete.
 
+### Automated quarantine (R-019 / Linux FIM)
+
+`scripts/response_fim.py` automates the safe part of containment for Linux FIM
+findings. It is deliberately conservative:
+
+- **Never deletes** — it *moves* the file to `/var/quarantine/` (always reversible).
+- **Dry-run by default** — prints what it *would* do; `--apply` is opt-in.
+- **Only acts on `file_created`** (new files = strongest webshell/persistence signal).
+  Modified files are left for a human, since legitimate updates touch them too.
+- **Path allowlist** (`PROTECTED_PREFIXES`) + **never-touch whitelist** + a
+  `MAX_ACTIONS` cap so a false-positive storm can't mass-quarantine the host.
+
+```bash
+# On the nginx VM (it must touch that host's filesystem):
+python3 scripts/response_fim.py --dry-run              # preview (default)
+python3 scripts/response_fim.py --range now-2h --apply # quarantine
+python3 scripts/response_fim.py --list-quarantine      # what's held
+python3 scripts/response_fim.py --restore <name>       # put one back
+```
+
+It records `sha256` + original path in a `.meta.json` beside each quarantined file,
+so quarantine doubles as evidence (step 3) and rollback.
+
+### Manual eradication
+
 ```bash
 # 1. Remove the malicious artifact (now that it is copied + hashed)
 #    e.g. the test persistence file used in this lab:

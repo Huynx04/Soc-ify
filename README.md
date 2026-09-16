@@ -92,6 +92,8 @@ soc-ify/
 │   ├── build_soc_summary_xlsx.py # export SOC summary to xlsx
 │   ├── build_project_report.py   # generate Word project report (driven by rules .yaml)
 │   ├── build_soc_pie_dashboard.py# (re)build pie/tagcloud SOC panels
+│   ├── capture_dashboard.py      # headless-Chrome screenshot of the Kibana dashboard
+│   ├── response_fim.py           # R-019 auto-quarantine (dry-run default, never deletes)
 │   ├── enable_file_integrity_audit.ps1  # turn on Security 4663 audit + SACL (R-016)
 │   ├── hermes-verify-r016.py     # self-check R-016 FIM correlation vs ES
 │   ├── alerts.py                 # (draft) push-notification alerting
@@ -250,15 +252,13 @@ Import `dashboards/soc_overview.ndjson` via **Stack Management → Saved Objects
 (overwrite), or follow `dashboards/SOC_OVERVIEW.md` to build panels by hand. Enable 5 s
 auto-refresh for a live SOC feel.
 
-> 📸 **Screenshot:** drop a real Kibana dashboard capture at
-> `assets/kibana-dashboard.png` and it will render below.
+> 📸 **Live dashboard** — real Kibana capture, 24h window, 7 panels (5 pie + 2 tagcloud):
 >
-> <!-- Uncomment once assets/kibana-dashboard.png exists:
 > ![SOC Kibana dashboard](assets/kibana-dashboard.png)
-> -->
 >
-> Panels: Severity · Rule · Attack Class · MITRE Tactic · Status · SSH Top IPs · UFW Top IPs.
-> (If the image is missing, the block stays commented out — no broken image in the README.)
+> Regenerate with `python scripts/capture_dashboard.py assets/kibana-dashboard.png`
+> (headless Chrome via DevTools Protocol — dismisses the Kibana toast, waits for all
+> panels to render, captures the full page height).
 
 ---
 
