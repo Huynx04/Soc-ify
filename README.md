@@ -82,7 +82,8 @@ soc-ify/
 ├── transforms/
 │   └── freq-detection-by-ip.json # R-011 frequency transform
 ├── docs/
-│   └── MULTI_SOURCE_CORRELATION_PLAN.md
+│   ├── MULTI_SOURCE_CORRELATION_PLAN.md
+│   └── INCIDENT_RESPONSE_PLAYBOOK.md  # validate→contain→preserve→eradicate→recover→learn
 ├── scripts/
 │   ├── deploy.sh                 # apply pipeline/template/transform to ES
 │   ├── apply_rules.py            # detection engine R-001..R-019 (scheduled)
@@ -157,18 +158,49 @@ soc-ify/
 ## 🧪 Real-world signal (why it's a *lab*, not a toy)
 
 SOC-ify is pointed at a **real public Azure VM** that is continuously scanned on the
-internet, so findings are live traffic — not planted samples. Example output observed
-across the fleet:
+internet, so findings are live traffic — not planted samples. Everything below is
+copied from `siem-findings` in a single 24h window (16 Sep 2026).
 
-| Source | What it caught (sample) |
-|--------|--------------------------|
-| **SSH brute-force** (R-014) | repeated `root`/user password guessing: `109.160.32.81` (10 fails), `138.36.215.108` (7 fails), plus `45.148.10.152`, `80.94.92.55`, `193.47.62.69` (5 fails each) in the same window |
-| **Web attack class** (R-001..R-010) | path traversal / `.env` / `geoserver` probes classified by the ingest pipeline |
-| **Windows FIM** (R-016/017) | host writes under sensitive `System32` paths flagged for process review — majority turn out to be legitimate Windows/Office behaviour (CryptnetUrlCache, `officeclicktorun`) ≈ false positives to triage, exactly like a real SOC |
+**Volume in that window:** 355 open findings · 8 attack classes · 10 distinct rules fired.
 
-> Tuned observations go to `siem-findings` (788 open cases in the current index as a
-> live queue), triaged with `triage.py`. This "signal vs. noise" loop is the part of
-> SOC work you can't get from a static rules repo.
+| Attack class | Findings | Notable source |
+|---|---|---|
+| `file_integrity` | 323 | `Nginx` (AIDE, R-019) + `laptop-ue85hh5h` (Windows FIM, R-016) |
+| `ssh_bruteforce` | 15 | R-014 — repeated password guessing |
+| `admin_panel_scan` | 6 | `/admin/config.php` probes |
+| `info_disclosure` | 4 | `/.env`, `/admin/config.php` |
+| `auth_scan` | 3 | login-endpoint enumeration |
+| `command_injection` | 1 | `/autodiscover/autodiscover.json?@zdi/Powershell` |
+| `scanner` | 2 | generic scanner user-agent |
+| `transverse_freq` | 1 | R-011 request-rate threshold |
+
+**Rules that actually fired:** R-016 (282), R-019 (36), R-014 (15), R-008 (6),
+R-017 (5), R-005 (4), R-009 (3), R-007 (2), R-004 (1), R-011 (1).
+
+### Sample findings (verbatim from the index)
+
+| Rule | Title | Source | Path | Status | Verdict |
+|---|---|---|---|---|---|
+| R-004 | Command Injection | `40.119.44.207` | `/autodiscover/autodiscover.json?@zdi/Powershell` | HTTP 403 | blocked probe |
+| R-005 | Sensitive File Disclosure | `160.119.76.210` | `/admin/config.php` | HTTP 403 | blocked (`real exposure if 200`) |
+| R-005 | Sensitive File Disclosure | `213.209.159.175` | `/.env` | HTTP 403 | blocked secret-hunt |
+| R-014 | SSH Brute-Force | `54.38.241.200` | `ssh_failures=8, users=eder,elsearch,media,root,thomas` | open | attempt; no success observed |
+| R-019 | AIDE File Integrity (Linux) | `Nginx` | `/etc/cron.d/backdoor` | open | **planted test artifact** (persistence demo, T1565.001) |
+| R-016 | Sensitive File Modified (4663) | `laptop-ue85hh5h` | sensitive `System32` paths | open | mostly legit Windows/Office — FP to triage |
+
+> ⚠️ Read the **response code**, not just the rule severity. R-005 fires at severity 4
+> on `/admin/config.php` and `/.env`, but both returned **403** — these are blocked
+> probes, not breaches (`false_positive_hint: real exposure if 200`). That
+> signal-vs-noise judgement is the part of SOC work you can't get from a static rules
+> repo, and it's written up in `docs/INCIDENT_RESPONSE_PLAYBOOK.md`.
+>
+> Host-local rules (R-016/017/018/019) have **no attacker IP** — `client.ip` holds the
+> hostname (`Nginx`, `laptop-ue85hh5h`). They join by file path + process + time.
+
+> 📋 **How to respond when one of these fires:** see
+> [`docs/INCIDENT_RESPONSE_PLAYBOOK.md`](docs/INCIDENT_RESPONSE_PLAYBOOK.md) — a
+> validate → contain → preserve → eradicate → recover → learn runbook mapped to the
+> real indices and scripts in this repo.
 
 ---
 
@@ -227,6 +259,7 @@ auto-refresh for a live SOC feel.
 - [ ] `apply_rules.py --count-only` returns non-zero on a SQLi/path probe
 - [ ] Findings appear in `siem-findings` (no duplicates on re-run)
 - [ ] Kibana SOC SIEM DASHBOARD renders all 3 sections
+- [ ] `docs/INCIDENT_RESPONSE_PLAYBOOK.md` reviewed — you know your first 3 actions
 
 ---
 
