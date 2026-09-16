@@ -39,7 +39,7 @@ check('"R-016": ("T1070", "Indicator Removal on Host", "defense-evasion")' in sr
 try:
     doc = yaml.safe_load(open(YAML, encoding="utf-8"))
     rids = [r["id"] for r in doc["rules"]]
-    check("R-016" in rids, f"detection-rules.yaml contains R-016 (18 rules total: {len(rids)})")
+    check("R-016" in rids, f"detection-rules.yaml contains R-016 ({len(rids)} rules total)")
     check("R-017" in rids, "detection-rules.yaml contains R-017 (Sysmon FileCreate)")
     check("R-018" in rids, "detection-rules.yaml contains R-018 (Sysmon ProcessCreate)")
     check(len(rids) >= 18, f"detection-rules.yaml rule count >= 18 ({len(rids)})")

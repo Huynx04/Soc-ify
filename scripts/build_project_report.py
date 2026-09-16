@@ -2,7 +2,7 @@
 """Generate a polished Word (.docx) project report for SOC-ify.
 
 Sources of truth:
-  - rules/detection-rules.yaml  -> dynamic rule table (18 rules R-001..R-018).
+  - rules/detection-rules.yaml  -> dynamic rule table (19 rules R-001..R-019).
   - Detection dashboard metrics section is a SAMPLE (kept static on purpose so the
     report builds offline / in CI with no live ES). Update figures manually as needed.
 
@@ -199,8 +199,8 @@ def build():
         f"rules/detection-rules.yaml — {n} rule Sigma-style",
         "transforms/freq-detection-by-ip.json — R-011 frequency transform",
         "scripts/ — deploy.sh, apply_rules.py, triage.py, daily_report.py, build_dashboard.py, "
-        "alerts.py (draft), build_project_report.py, apply_rules (18 rule engine), "
-        "enable_file_integrity_audit.ps1",
+        f"alerts.py, build_project_report.py, apply_rules ({n} rule engine), "
+        "response_fim.py, capture_dashboard.py, enable_file_integrity_audit.ps1",
         "dashboards/ — soc_overview.ndjson + SOC_OVERVIEW.md",
         "sysmon/ — Sysmon FIM config (binaries gitignored EULA)",
         "reports/ — báo cáo hàng ngày và báo cáo tổng thể",

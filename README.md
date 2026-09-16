@@ -4,7 +4,7 @@
 > single Azure VM's nginx access logs into a working SOC: **detect → triage → report**,
 > with live Kibana dashboards — no paid Elastic Security / Watcher required.
 
-![License](https://img.shields.io/badge/license-MIT-blue) ![ES](https://img.shields.io/badge/Elasticsearch-8.12-orange) ![Kibana](https://img.shields.io/badge/Kibana-8.12-teal) ![Azure](https://img.shields.io/badge/infra-Azure%20VM-lightgrey) ![Python](https://img.shields.io/badge/python-3.10%2B-green)
+![License](https://img.shields.io/badge/license-MIT-blue) ![ES](https://img.shields.io/badge/Elasticsearch-8.12-orange) ![Kibana](https://img.shields.io/badge/Kibana-8.12-teal) ![Azure](https://img.shields.io/badge/infra-Azure%20VM-lightgrey) ![Python](https://img.shields.io/badge/python-3.10%2B-green) [![CI](https://github.com/Huynx04/Soc-ify/actions/workflows/ci.yml/badge.svg)](https://github.com/Huynx04/Soc-ify/actions/workflows/ci.yml)
 
 ---
 
@@ -74,6 +74,8 @@ Windows endpoint ──► winlogbeat ──► winlogbeat-*            (R-001..
 
 ```
 soc-ify/
+├── .github/workflows/ci.yml      # offline artifact validation (rules/pipeline/scripts)
+├── tests/test_artifacts.py       # 13 checks, no ES needed (stdlib or pytest)
 ├── AGENTS.md                     # AI-agent context (Claude Code/Codex/Hermes)
 ├── ingest-pipelines/
 │   └── nginx-soc-enrich.json     # attack classification + ECS + GeoIP (validated)
@@ -96,7 +98,7 @@ soc-ify/
 │   ├── response_fim.py           # R-019 auto-quarantine (dry-run default, never deletes)
 │   ├── enable_file_integrity_audit.ps1  # turn on Security 4663 audit + SACL (R-016)
 │   ├── hermes-verify-r016.py     # self-check R-016 FIM correlation vs ES
-│   ├── alerts.py                 # (draft) push-notification alerting
+│   ├── alerts.py                 # push-notification alerting (Slack/Telegram/email)
 │   ├── build_dashboard.py        # Kibana dashboard generator/importer
 │   ├── fix_soc_dashboard.py      # repair missing index-pattern + refs
 │   ├── populate_soc_panels.py    # fill dashboard panelsJSON layout
@@ -106,6 +108,7 @@ soc-ify/
 ├── sysmon/
 │   ├── sysmon-config.xml         # minimal FIM Sysmon config (evt 1/11 FileCreate)
 │   ├── sysmon-config-swiftonsecurity.xml  # full SwiftOnSecurity base (deployment default)
+│   ├── experiments/              # throwaway config attempts (see experiments/README.md)
 │   └── (binaries gitignored per Sysinternals redistributable EULA)
 ├── dashboards/
 │   ├── SOC_OVERVIEW.md           # panel-by-panel build spec
@@ -264,6 +267,22 @@ auto-refresh for a live SOC feel.
 
 ## ✅ Verification checklist
 
+Run the offline suite first — it needs no Elasticsearch:
+
+```bash
+python tests/test_artifacts.py      # stdlib runner, 13 checks
+python -m pytest tests/ -q          # same suite via pytest
+```
+
+It validates: all 19 rules present and well-formed · every rule maps to MITRE ·
+README rule-count matches the YAML (**guards the 18-vs-19 bug already fixed**) ·
+no stale "18 rule" strings in scripts · ingest pipeline sets
+`attack_class/severity/confidence` · transform + JSON artifacts parse · every script
+compiles · no secrets committed · `.env.local` stays ignored. CI runs it on 3.10 and
+3.12 for every push.
+
+Then verify against a live stack:
+
 - [ ] `curl -s …/_ingest/pipeline/nginx-soc-enrich` → 200
 - [ ] New nginx docs carry `soc.attack_class`
 - [ ] `apply_rules.py --count-only` returns non-zero on a SQLi/path probe
@@ -282,8 +301,9 @@ auto-refresh for a live SOC feel.
   forward.
 - **License** — deliberately no Watcher/paid Detection Rules dependency, so it survives an
   Elastic trial→Basic downgrade.
-- **Durable alerting** — `alerts.py` is a draft; wire it to a Slack/Telegram webhook
-  (reads `SOC_ALERT_*` channel creds from env, never committed) to close the detect→notify loop.
+- **Alerting** — `alerts.py` pushes findings to Slack/Telegram/email (channel creds read
+  from `SOC_ALERT_*` env vars, never committed). Schedule it alongside `apply_rules.py`
+  to close the detect→notify loop.
 - **Windows FIM prerequisites** — R-016 requires the File System audit turned on
   (auditpol subcategory + SACL); R-017/018 require Sysmon (`sysmon/`) + the
   `Microsoft-Windows-Sysmon/Operational` channel enabled in winlogbeat. See AGENTS.md.
